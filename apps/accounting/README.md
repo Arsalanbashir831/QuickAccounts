@@ -15,3 +15,24 @@ claim an idempotency receipt, acquire locks in the documented global order, vali
 fiscal period, commit immutable effects plus audit/outbox rows atomically, and replay the
 same receipt after an unknown commit.
 
+## Business-specific charts of accounts
+
+The release-managed template catalog has three versioned profiles:
+
+- `retail-wholesale-v1` for both retail and wholesale companies;
+- `ecommerce-v1` for webstores and marketplace sellers;
+- `manufacturing-v1` for raw materials, WIP, finished goods, applied costs, and variances.
+
+`GET /accounting/chart-templates` lists the catalog and the company's current selection.
+`GET /accounting/chart-templates/{code}` returns the template account hierarchy. An
+accounting administrator applies a compatible template with
+`POST /accounting/chart-templates/{code}/apply` and a `business_type` body value.
+
+Application is additive and idempotent. It records template provenance on created
+accounts, preserves later company-specific edits, and refuses to reinterpret a colliding
+account code or replace an already-applied profile automatically. Retail and wholesale can
+switch labels because they intentionally use the same chart. Template definitions are
+release-managed rather than tenant-editable; company accounts remain normal CRUD resources.
+
+Deleting an unused account is supported. Accounts referenced by children, journal lines, or
+business configuration must be deactivated instead so historical meaning is preserved.

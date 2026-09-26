@@ -12,10 +12,16 @@ from rest_framework.views import APIView
 
 from apps.licensing.api.serializers import (
     ActivationCreateSerializer,
+    LicenseRedeemSerializer,
     RenewalOrderCreateSerializer,
 )
 from apps.licensing.selectors import license_summary, list_activations, renewal_order
-from apps.licensing.services import create_activation, create_renewal_order, touch_activation
+from apps.licensing.services import (
+    create_activation,
+    create_renewal_order,
+    redeem_license,
+    touch_activation,
+)
 from common.access.scopes import TenantScope, bind_and_verify_tenant
 from common.api.errors import ScopeNotFound
 from common.api.headers import require_idempotency_key
@@ -34,6 +40,21 @@ class LicenseSummaryView(APIView):
             bind_and_verify_tenant(_scope(request, tenant_id))
             body = license_summary(tenant_id)
         return Response(body)
+
+
+class LicenseRedeemView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request=LicenseRedeemSerializer, responses=OpenApiTypes.OBJECT)
+    def post(self, request: Request, tenant_id: uuid.UUID) -> Response:
+        serializer = LicenseRedeemSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        body, response_status = redeem_license(
+            _scope(request, tenant_id),
+            credential=serializer.validated_data["credential"],
+            idempotency_key=require_idempotency_key(request),
+        )
+        return Response(body, status=response_status)
 
 
 class ActivationListCreateView(APIView):
@@ -63,7 +84,7 @@ class ActivationListCreateView(APIView):
 class ActivationCommandView(APIView):
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(responses=OpenApiTypes.OBJECT)
+    @extend_schema(request=None, responses=OpenApiTypes.OBJECT)
     def post(
         self,
         request: Request,

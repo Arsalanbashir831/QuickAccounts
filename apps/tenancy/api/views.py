@@ -43,7 +43,8 @@ class CompanyListView(APIView):
                 cursor.execute(
                     """
                     SELECT c.id, c.code, c.legal_name, c.functional_currency,
-                           c.timezone_name, c.is_active
+                           c.timezone_name, c.business_type, c.chart_template_code,
+                           c.chart_template_applied_at, c.is_active
                     FROM erp.companies c
                     JOIN identity.company_memberships cm
                       ON cm.tenant_id = c.tenant_id AND cm.company_id = c.id

@@ -17,6 +17,12 @@ urlpatterns = [
         name="platform-license-revoke",
     ),
     path(
+        "licenses/<uuid:license_id>/resume",
+        LicenseStatusView.as_view(),
+        {"action": "resume"},
+        name="platform-license-resume",
+    ),
+    path(
         "plan-versions/<uuid:plan_version_id>/publish",
         PlanPublishView.as_view(),
         name="platform-plan-publish",

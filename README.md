@@ -44,6 +44,8 @@ uv run celery -A config beat --loglevel=INFO
 - Idempotent fiscal-period close/reopen with revision checks and reconciliation blockers
 - Trial balance, period activity, and general ledger with running functional-currency balances
 - Company capabilities, module configuration, batch validation/change, and module audit history
+- Company-scoped business-partner search/create/detail/update with revision and audit controls
+- Partner address list/create/versioned-update and effective-dated tax-registration list/create
 - Tenant license summaries, activation allocation/cleanup, and renewal-order creation
 - Platform-operator license issuance, suspension/revocation, and plan-version publication
 - `/api/schema` and `/api/docs` for the generated OpenAPI contract
@@ -69,10 +71,22 @@ PgBouncer transaction pooling compatibility.
 
 ## Current boundary
 
-Accounting Phase 3 and access/licensing Phase 4 are implemented. Phase 4 includes effective
+Accounting Phase 3 and access/licensing Phase 4 are implemented. Phase 5 is underway: partner
+headers, addresses, and effective-dated tax registrations are complete; the shared item/service
+catalog and accounting profiles are next. Phase 4 includes effective
 capabilities, revision-checked and idempotent module policy changes, dependency and entitlement
 validation, audit/outbox persistence, license summaries, activation quota enforcement,
-renewal-order creation, and protected platform license lifecycle operations. Payment-provider
-fulfillment and webhook processing remain Phase 6 integration work. Fiscal timezone policy for
-future renewal fulfillment, inventory policy/costing, country tax packs, and returns/refunds
-remain explicit product decisions from the supplied test plan and are not guessed here.
+explicit credential redemption and tenant/product binding, renewal-order creation, stable expiry
+denials, and protected platform suspend/resume/revoke operations. The production runtime role can
+read company policy but cannot mutate policy state or module settings outside the guarded database
+protocol. PostgreSQL tests cover stale revisions, atomic batches, company isolation, disable/write
+coordination, activation quota races, published-plan immutability, term validity, and calendar-month
+boundaries across month-end and DST.
+
+Verified payment-provider fulfillment and webhook processing remain Phase 6 integration work.
+Signed offline grants remain disabled until a signing service and its subject/audience/signature
+verification contract are selected. Inventory policy/costing, country tax packs, and
+returns/refunds remain explicit product decisions from the supplied test plan and are not guessed.
+
+Phase 5 is split into bounded delivery and verification checkpoints in
+[`docs/phase-5-roadmap.md`](docs/phase-5-roadmap.md).

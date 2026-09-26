@@ -5,157 +5,11 @@ import uuid
 import psycopg
 import pytest
 from django.conf import settings as django_settings
-from django.contrib.auth import get_user_model
 from django.db import DatabaseError, close_old_connections, connection, transaction
 from rest_framework.test import APIClient
 
 from apps.accounting.services.accounting import post_entry
 from common.access.scopes import CompanyScope
-
-
-@pytest.fixture
-def accounting_context(db: object, settings: object) -> dict[str, object]:
-    names = (
-        "tenant",
-        "company",
-        "user",
-        "product",
-        "plan",
-        "version",
-        "license",
-        "term",
-        "journal",
-        "period",
-        "cash",
-        "equity",
-    )
-    ids = {name: uuid.uuid4() for name in names}
-    product_code = f"quickaccounts-{ids['product']}"
-    settings.ERP_PRODUCT_CODE = product_code
-    with connection.cursor() as cursor:
-        cursor.execute(
-            "INSERT INTO erp.currencies(code,name,minor_units) VALUES ('USD','US Dollar',2) "
-            "ON CONFLICT DO NOTHING"
-        )
-        cursor.execute("INSERT INTO erp.tenants(id,name) VALUES (%s,'API tenant')", [ids["tenant"]])
-        cursor.execute(
-            """
-            INSERT INTO erp.companies(id,tenant_id,code,legal_name,functional_currency)
-            VALUES (%s,%s,'MAIN','API Company','USD')
-            """,
-            [ids["company"], ids["tenant"]],
-        )
-        cursor.execute(
-            """
-            INSERT INTO identity.users(id,email,password,first_name)
-            VALUES (%s,%s,'!','Owner')
-            """,
-            [ids["user"], f"owner-{ids['user']}@example.com"],
-        )
-        cursor.execute(
-            """
-            INSERT INTO identity.tenant_memberships(tenant_id,user_id,tenant_role)
-            VALUES (%s,%s,'owner')
-            """,
-            [ids["tenant"], ids["user"]],
-        )
-        cursor.execute(
-            """
-            INSERT INTO identity.company_memberships(tenant_id,company_id,user_id)
-            VALUES (%s,%s,%s)
-            """,
-            [ids["tenant"], ids["company"], ids["user"]],
-        )
-        cursor.execute(
-            "INSERT INTO licensing.products(id,product_code,name) VALUES (%s,%s,'QuickAccounts')",
-            [ids["product"], product_code],
-        )
-        cursor.execute(
-            "INSERT INTO licensing.plans(id,product_id,plan_code,name) "
-            "VALUES (%s,%s,'standard','Standard')",
-            [ids["plan"], ids["product"]],
-        )
-        cursor.execute(
-            """
-            INSERT INTO licensing.plan_versions(
-                id,product_id,plan_id,version_number,term_unit,max_activations,
-                price_currency,price_amount
-            ) VALUES (%s,%s,%s,1,'lifetime',1,'USD',25)
-            """,
-            [ids["version"], ids["product"], ids["plan"]],
-        )
-        cursor.execute(
-            """
-            INSERT INTO licensing.plan_features(plan_version_id,feature_code,is_enabled)
-            VALUES (%s,'module.sales',true)
-            """,
-            [ids["version"]],
-        )
-        cursor.execute(
-            "UPDATE licensing.plan_versions SET published_at=clock_timestamp() WHERE id=%s",
-            [ids["version"]],
-        )
-        cursor.execute(
-            """
-            INSERT INTO licensing.licenses(
-                id,tenant_id,product_id,license_number_hash,license_number_last4,status
-            ) VALUES (%s,%s,%s,%s,'1234','active')
-            """,
-            [ids["license"], ids["tenant"], ids["product"], uuid.uuid4().bytes * 2],
-        )
-        cursor.execute(
-            """
-            INSERT INTO licensing.license_terms(
-                id,tenant_id,license_id,plan_version_id,term_unit_snapshot,
-                starts_at,max_activations_snapshot
-            ) VALUES (%s,%s,%s,%s,'lifetime',clock_timestamp()-interval '1 day',1)
-            """,
-            [ids["term"], ids["tenant"], ids["license"], ids["version"]],
-        )
-        cursor.execute(
-            """
-            UPDATE licensing.tenant_product_bindings SET license_id=%s
-            WHERE tenant_id=%s AND product_id=%s
-            """,
-            [ids["license"], ids["tenant"], ids["product"]],
-        )
-        cursor.execute(
-            """
-            INSERT INTO erp.journals(id,company_id,code,name,journal_type)
-            VALUES (%s,%s,'GJ','General Journal','general')
-            """,
-            [ids["journal"], ids["company"]],
-        )
-        cursor.execute(
-            """
-            INSERT INTO erp.fiscal_periods(id,company_id,code,starts_on,ends_on)
-            VALUES (%s,%s,'2026-09','2026-09-01','2026-09-30')
-            """,
-            [ids["period"], ids["company"]],
-        )
-        cursor.execute(
-            """
-            INSERT INTO erp.document_sequences(
-                company_id,fiscal_period_id,sequence_code,prefix,next_value,padding_length
-            ) VALUES (%s,%s,'MANUAL_JOURNAL','GJ-',1,6)
-            """,
-            [ids["company"], ids["period"]],
-        )
-        cursor.execute(
-            """
-            INSERT INTO erp.accounts(
-                id,company_id,code,name,account_type,normal_balance
-            ) VALUES
-                (%s,%s,'1000','Cash','asset','debit'),
-                (%s,%s,'3000','Opening Equity','equity','credit')
-            """,
-            [ids["cash"], ids["company"], ids["equity"], ids["company"]],
-        )
-    user = get_user_model().objects.get(pk=ids["user"])
-    client = APIClient()
-    client.force_login(user)
-    ids["client"] = client
-    return ids
 
 
 def _entry_url(context: dict[str, object]) -> str:
@@ -374,6 +228,169 @@ def test_cross_tenant_company_scope_is_hidden(accounting_context: dict[str, obje
     )
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "SCOPE_NOT_FOUND"
+
+
+@pytest.mark.api
+@pytest.mark.p0
+@pytest.mark.django_db(transaction=True)
+def test_chart_template_catalog_exposes_business_compatibility(
+    accounting_context: dict[str, object],
+) -> None:
+    client = accounting_context["client"]
+    assert isinstance(client, APIClient)
+    url = _entry_url(accounting_context).removesuffix("/entries") + "/chart-templates"
+
+    response = client.get(url)
+
+    assert response.status_code == 200, response.json()
+    templates = {item["code"]: item for item in response.json()["results"]}
+    assert set(templates) == {
+        "retail-wholesale-v1",
+        "ecommerce-v1",
+        "manufacturing-v1",
+    }
+    assert templates["retail-wholesale-v1"]["compatible_business_types"] == [
+        "retail",
+        "wholesale",
+    ]
+    assert templates["ecommerce-v1"]["account_count"] > templates[
+        "retail-wholesale-v1"
+    ]["account_count"]
+    assert response.json()["company"]["business_type"] is None
+
+    detail = client.get(f"{url}/manufacturing-v1")
+    assert detail.status_code == 200, detail.json()
+    account_codes = {account["code"] for account in detail.json()["accounts"]}
+    assert {"1310", "1320", "1330", "5230"} <= account_codes
+
+
+@pytest.mark.api
+@pytest.mark.p0
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    ("business_type", "template_code", "expected_code"),
+    [
+        ("retail", "retail-wholesale-v1", "4110"),
+        ("wholesale", "retail-wholesale-v1", "4110"),
+        ("ecommerce", "ecommerce-v1", "6430"),
+        ("manufacturing", "manufacturing-v1", "1320"),
+    ],
+)
+def test_apply_business_chart_template_is_idempotent(
+    accounting_context: dict[str, object],
+    business_type: str,
+    template_code: str,
+    expected_code: str,
+) -> None:
+    client = accounting_context["client"]
+    assert isinstance(client, APIClient)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "DELETE FROM erp.accounts WHERE company_id = %s",
+            [accounting_context["company"]],
+        )
+    url = (
+        _entry_url(accounting_context).removesuffix("/entries")
+        + f"/chart-templates/{template_code}/apply"
+    )
+
+    first = client.post(url, {"business_type": business_type}, format="json")
+    second = client.post(url, {"business_type": business_type}, format="json")
+
+    assert first.status_code == 200, first.json()
+    assert first.json()["created_count"] > 0
+    assert expected_code in first.json()["created_account_codes"]
+    assert second.status_code == 200, second.json()
+    assert second.json()["created_count"] == 0
+    assert second.json()["existing_count"] == first.json()["created_count"]
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT business_type, chart_template_code, chart_template_applied_at
+            FROM erp.companies WHERE id = %s
+            """,
+            [accounting_context["company"]],
+        )
+        company = cursor.fetchone()
+        cursor.execute(
+            """
+            SELECT source_template_code, source_template_account_code
+            FROM erp.accounts WHERE company_id = %s AND code = %s
+            """,
+            [accounting_context["company"], expected_code],
+        )
+        source = cursor.fetchone()
+    assert company[0:2] == (business_type, template_code)
+    assert company[2] is not None
+    assert source == (template_code, expected_code)
+
+
+@pytest.mark.api
+@pytest.mark.p0
+@pytest.mark.django_db(transaction=True)
+def test_template_mismatch_and_automatic_replacement_are_rejected(
+    accounting_context: dict[str, object],
+) -> None:
+    client = accounting_context["client"]
+    assert isinstance(client, APIClient)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "DELETE FROM erp.accounts WHERE company_id = %s",
+            [accounting_context["company"]],
+        )
+    prefix = _entry_url(accounting_context).removesuffix("/entries") + "/chart-templates"
+
+    mismatch = client.post(
+        f"{prefix}/ecommerce-v1/apply",
+        {"business_type": "manufacturing"},
+        format="json",
+    )
+    applied = client.post(
+        f"{prefix}/ecommerce-v1/apply",
+        {"business_type": "ecommerce"},
+        format="json",
+    )
+    replacement = client.post(
+        f"{prefix}/manufacturing-v1/apply",
+        {"business_type": "manufacturing"},
+        format="json",
+    )
+
+    assert mismatch.status_code == 400
+    assert mismatch.json()["error"]["code"] == "BUSINESS_TYPE_TEMPLATE_MISMATCH"
+    assert applied.status_code == 200, applied.json()
+    assert replacement.status_code == 409
+    assert replacement.json()["error"]["code"] == "CHART_TEMPLATE_CHANGE_REQUIRES_REVIEW"
+
+
+@pytest.mark.api
+@pytest.mark.p0
+@pytest.mark.django_db(transaction=True)
+def test_account_delete_is_crud_safe(accounting_context: dict[str, object]) -> None:
+    client = accounting_context["client"]
+    assert isinstance(client, APIClient)
+    prefix = _entry_url(accounting_context).removesuffix("/entries") + "/accounts"
+    created = client.post(
+        prefix,
+        {
+            "parent_account_id": str(accounting_context["cash"]),
+            "code": "1010",
+            "name": "Petty Cash",
+            "account_type": "asset",
+            "normal_balance": "debit",
+        },
+        format="json",
+    )
+    assert created.status_code == 201, created.json()
+
+    parent_delete = client.delete(f"{prefix}/{accounting_context['cash']}")
+    child_delete = client.delete(f"{prefix}/{created.json()['id']}")
+    missing = client.get(f"{prefix}/{created.json()['id']}")
+
+    assert parent_delete.status_code == 409
+    assert parent_delete.json()["error"]["code"] == "ACCOUNT_IN_USE"
+    assert child_delete.status_code == 204
+    assert missing.status_code == 404
 
 
 @pytest.mark.api

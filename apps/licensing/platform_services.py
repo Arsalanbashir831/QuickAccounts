@@ -182,11 +182,10 @@ def issue_license(
         _execute(
             """
             UPDATE licensing.tenant_product_bindings
-            SET license_id=%s,billing_anchor_day=%s,month_end_anchor=%s
+            SET billing_anchor_day=%s,month_end_anchor=%s
             WHERE tenant_id=%s AND product_id=%s
             """,
             [
-                license_id,
                 starts_at.day,
                 starts_at.day == calendar.monthrange(starts_at.year, starts_at.month)[1],
                 tenant_id,
@@ -245,20 +244,50 @@ def change_license_status(
         )
         if replay is not None:
             return replay
-        target = "suspended" if action == "suspend" else "revoked"
-        row = _execute(
+        target = {"suspend": "suspended", "resume": "active", "revoke": "revoked"}[action]
+        candidate = _execute(
             """
-            SELECT l.tenant_id,l.product_id,l.status
-            FROM licensing.tenant_product_bindings b
-            JOIN licensing.licenses l ON l.id=b.license_id AND l.tenant_id=b.tenant_id
-            WHERE l.id=%s FOR UPDATE OF b,l
+            SELECT tenant_id,product_id
+            FROM licensing.licenses
+            WHERE id=%s
             """,
             [license_id],
+        )
+        if candidate is None:
+            raise ScopeNotFound()
+        coordinator = _execute(
+            """
+            SELECT license_id
+            FROM licensing.tenant_product_bindings
+            WHERE tenant_id=%s AND product_id=%s
+            FOR UPDATE
+            """,
+            [candidate[0], candidate[1]],
+        )
+        if coordinator is None:
+            raise Conflict(
+                "ENTITLEMENT_COORDINATOR_MISSING",
+                "The tenant product entitlement coordinator is missing.",
+            )
+        row = _execute(
+            """
+            SELECT tenant_id,product_id,status
+            FROM licensing.licenses
+            WHERE id=%s AND tenant_id=%s AND product_id=%s
+            FOR UPDATE
+            """,
+            [license_id, candidate[0], candidate[1]],
         )
         if row is None:
             raise ScopeNotFound()
         if row[2] == "revoked":
             raise Conflict("LICENSE_REVOKED", "A revoked license cannot change status.")
+        allowed_from = {"suspend": "active", "resume": "suspended", "revoke": row[2]}
+        if row[2] != allowed_from[action]:
+            raise Conflict(
+                "LICENSE_STATUS_CONFLICT",
+                f"The license cannot be changed from {row[2]} using {action}.",
+            )
         _execute("UPDATE licensing.licenses SET status=%s WHERE id=%s", [target, license_id])
         _execute(
             """
@@ -266,7 +295,13 @@ def change_license_status(
                 tenant_id,license_id,event_type,actor_reference,event_data
             ) VALUES (%s,%s,%s,%s,%s::jsonb)
             """,
-            [row[0], license_id, target, str(operator_id), json.dumps({"reason": reason})],
+            [
+                row[0],
+                license_id,
+                "resumed" if action == "resume" else target,
+                str(operator_id),
+                json.dumps({"reason": reason}),
+            ],
         )
         revision = _execute(
             """
@@ -288,7 +323,7 @@ def change_license_status(
             payload=payload,
             body=body,
             reason=reason,
-            action=f"license.{target}",
+            action="license.resumed" if action == "resume" else f"license.{target}",
             object_type="license",
             object_id=license_id,
         )

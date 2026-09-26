@@ -9,3 +9,12 @@ class ActivationCreateSerializer(serializers.Serializer):
 class RenewalOrderCreateSerializer(serializers.Serializer):
     plan_version_id = serializers.UUIDField()
     provider = serializers.CharField(min_length=1, max_length=100)
+
+
+class LicenseRedeemSerializer(serializers.Serializer):
+    credential = serializers.CharField(
+        min_length=20,
+        max_length=500,
+        write_only=True,
+        trim_whitespace=True,
+    )

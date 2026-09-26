@@ -113,10 +113,29 @@ def assert_company_write(company_id: uuid.UUID, module: str, permission: str) ->
             [company_id, product_id, module, permission],
         )
     except Exception as exc:
-        if (
-            getattr(exc, "sqlstate", None) == "42501"
-            or getattr(getattr(exc, "__cause__", None), "sqlstate", None) == "42501"
-        ):
+        cause = getattr(exc, "__cause__", None)
+        if getattr(exc, "sqlstate", None) == "42501" or getattr(
+            cause, "sqlstate", None
+        ) == "42501":
+            diagnostic = getattr(cause, "diag", None) or getattr(exc, "diag", None)
+            reason = str(getattr(diagnostic, "message_primary", "")).lower()
+            if "no designated license" in reason:
+                raise PermissionDenied(
+                    "LICENSE_NOT_BOUND", "No designated product license is bound."
+                ) from exc
+            if "license expired" in reason:
+                raise PermissionDenied(
+                    "LICENSE_EXPIRED", "The product license has expired."
+                ) from exc
+            if "license inactive" in reason:
+                raise PermissionDenied(
+                    "LICENSE_INACTIVE", "The product license is not active."
+                ) from exc
+            if "module/dependency" in reason:
+                raise PermissionDenied(
+                    "MODULE_WRITE_DENIED",
+                    "The module, dependency, or licensed feature is not writable.",
+                ) from exc
             raise PermissionDenied(
                 "WRITE_ACCESS_DENIED",
                 "License, module, company, or action policy denies this write.",

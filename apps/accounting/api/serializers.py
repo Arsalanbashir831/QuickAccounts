@@ -30,6 +30,12 @@ class AccountPatchSerializer(serializers.Serializer):
     is_active = serializers.BooleanField(required=False)
 
 
+class ChartTemplateApplySerializer(serializers.Serializer):
+    business_type = serializers.ChoiceField(
+        choices=["retail", "wholesale", "ecommerce", "manufacturing"]
+    )
+
+
 class JournalSerializer(serializers.Serializer):
     code = serializers.CharField(max_length=100)
     name = serializers.CharField(max_length=255)

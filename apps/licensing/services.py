@@ -169,6 +169,153 @@ def create_activation(
         raise Conflict(code, "The license activation could not be allocated.") from exc
 
 
+def redeem_license(
+    scope: TenantScope,
+    *,
+    credential: str,
+    idempotency_key: str,
+) -> tuple[dict[str, Any], int]:
+    normalized = credential.strip()
+    credential_hash = hashlib.sha256(normalized.encode()).digest()
+    payload = {"credential_sha256": credential_hash.hex()}
+    try:
+        with transaction.atomic(durable=True):
+            bind_and_verify_tenant(scope, administer=True)
+            receipt = _claim_receipt(
+                scope,
+                operation="license.redeem",
+                resource_key="",
+                key=idempotency_key,
+                payload=payload,
+            )
+            if receipt.replay_body is not None:
+                return receipt.replay_body, receipt.replay_status or 200
+            product = _execute(
+                "SELECT id FROM licensing.products WHERE product_code=%s AND is_active",
+                [settings.ERP_PRODUCT_CODE],
+            )
+            if product is None:
+                raise APIError(
+                    code="PRODUCT_NOT_CONFIGURED",
+                    message="The ERP product catalog is not configured.",
+                    status_code=503,
+                )
+            product_id = cast(uuid.UUID, product[0])
+            candidate = _execute(
+                """
+                SELECT id
+                FROM licensing.licenses
+                WHERE tenant_id=%s AND product_id=%s AND license_number_hash=%s
+                """,
+                [scope.tenant_id, product_id, credential_hash],
+            )
+            if candidate is None:
+                raise Conflict(
+                    "INVALID_LICENSE_CREDENTIAL",
+                    "The license credential is invalid for this tenant and product.",
+                )
+            binding = _execute(
+                """
+                SELECT license_id
+                FROM licensing.tenant_product_bindings
+                WHERE tenant_id=%s AND product_id=%s
+                FOR UPDATE
+                """,
+                [scope.tenant_id, product_id],
+            )
+            if binding is None:
+                raise Conflict(
+                    "ENTITLEMENT_COORDINATOR_MISSING",
+                    "The tenant product entitlement coordinator is missing.",
+                )
+            license_row = _execute(
+                """
+                SELECT id,status,license_number_last4,redeemed_at
+                FROM licensing.licenses
+                WHERE id=%s AND tenant_id=%s AND product_id=%s AND license_number_hash=%s
+                FOR UPDATE
+                """,
+                [candidate[0], scope.tenant_id, product_id, credential_hash],
+            )
+            if license_row is None:
+                raise Conflict(
+                    "INVALID_LICENSE_CREDENTIAL",
+                    "The license credential is invalid for this tenant and product.",
+                )
+            if license_row[3] is not None:
+                raise Conflict(
+                    "LICENSE_ALREADY_REDEEMED",
+                    "This license credential has already been redeemed.",
+                )
+            if license_row[1] != "active":
+                raise Conflict(
+                    "LICENSE_NOT_ACTIVE",
+                    "Only an active license can be redeemed.",
+                )
+            active_term = _execute(
+                """
+                SELECT id
+                FROM licensing.license_terms
+                WHERE tenant_id=%s AND license_id=%s
+                  AND starts_at<=clock_timestamp()
+                  AND (expires_at IS NULL OR clock_timestamp()<expires_at)
+                ORDER BY starts_at DESC,id DESC LIMIT 1
+                """,
+                [scope.tenant_id, license_row[0]],
+            )
+            if active_term is None:
+                raise Conflict(
+                    "LICENSE_TERM_INACTIVE",
+                    "The license has no currently valid term.",
+                )
+            _execute(
+                """
+                UPDATE licensing.licenses
+                SET redeemed_at=clock_timestamp(),redeemed_by=%s
+                WHERE id=%s
+                """,
+                [scope.user_id, license_row[0]],
+            )
+            revision = _execute(
+                """
+                UPDATE licensing.tenant_product_bindings
+                SET license_id=%s
+                WHERE tenant_id=%s AND product_id=%s
+                RETURNING entitlement_revision
+                """,
+                [license_row[0], scope.tenant_id, product_id],
+            )
+            assert revision is not None
+            _execute(
+                """
+                INSERT INTO licensing.license_events(
+                    tenant_id,license_id,event_type,actor_reference,event_data
+                ) VALUES (%s,%s,'redeemed',%s,%s::jsonb)
+                """,
+                [
+                    scope.tenant_id,
+                    license_row[0],
+                    str(scope.user_id),
+                    json.dumps({"product_id": str(product_id)}),
+                ],
+            )
+            body = {
+                "license_id": str(license_row[0]),
+                "status": license_row[1],
+                "license_number_last4": license_row[2],
+                "entitlement_revision": int(revision[0]),
+            }
+            _complete(receipt, body, 200, license_row[0])
+            return body, 200
+    except (APIError, Conflict):
+        raise
+    except (DatabaseError, IntegrityError) as exc:
+        raise Conflict(
+            "LICENSE_REDEMPTION_CONFLICT",
+            "The license credential could not be redeemed.",
+        ) from exc
+
+
 def touch_activation(
     scope: TenantScope, activation_id: uuid.UUID, *, deactivate: bool
 ) -> dict[str, Any]:
@@ -184,9 +331,10 @@ def touch_activation(
             f"""
             UPDATE licensing.license_activations SET {assignment}
             WHERE tenant_id=%s AND license_id=%s AND id=%s
+              AND (%s OR deactivated_at IS NULL)
             RETURNING id,activated_at,last_seen_at,deactivated_at
             """,
-            [scope.tenant_id, license_id, activation_id],
+            [scope.tenant_id, license_id, activation_id, deactivate],
         )
         if row is None:
             raise ScopeNotFound()

@@ -76,6 +76,14 @@ CONFIG_INSERTS = {
 }
 
 
+BUSINESS_PROFILE_BY_TYPE = {
+    "retail": "retail_wholesale",
+    "wholesale": "retail_wholesale",
+    "ecommerce": "ecommerce",
+    "manufacturing": "manufacturing",
+}
+
+
 def create_config(scope: CompanyScope, resource: str, data: dict[str, Any]) -> uuid.UUID:
     sql, fields = CONFIG_INSERTS[resource]
     try:
@@ -112,6 +120,208 @@ def update_account(
                 raise ScopeNotFound()
     except IntegrityError as exc:
         raise _database_conflict(exc) from exc
+
+
+def delete_account(scope: CompanyScope, account_id: uuid.UUID) -> None:
+    try:
+        with transaction.atomic(durable=True):
+            bind_and_verify_company(scope)
+            assert_company_write(scope.company_id, "accounting", "accounting.setup.manage")
+            row = _execute(
+                "DELETE FROM erp.accounts WHERE company_id = %s AND id = %s RETURNING id",
+                [scope.company_id, account_id],
+            )
+            if row is None:
+                raise ScopeNotFound()
+    except IntegrityError as exc:
+        constraint = getattr(getattr(exc, "__cause__", None), "diag", None)
+        raise Conflict(
+            "ACCOUNT_IN_USE",
+            "The account is referenced by accounting or business data; deactivate it instead.",
+            {"constraint": getattr(constraint, "constraint_name", None)},
+        ) from exc
+
+
+def apply_chart_template(
+    scope: CompanyScope,
+    *,
+    template_code: str,
+    business_type: str,
+) -> dict[str, Any]:
+    requested_profile = BUSINESS_PROFILE_BY_TYPE[business_type]
+    try:
+        with transaction.atomic(durable=True):
+            bind_and_verify_company(scope)
+            assert_company_write(scope.company_id, "accounting", "accounting.setup.manage")
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT business_type, chart_template_code
+                    FROM erp.companies WHERE id = %s FOR UPDATE
+                    """,
+                    [scope.company_id],
+                )
+                company = cursor.fetchone()
+                if company is None:
+                    raise ScopeNotFound()
+
+                cursor.execute(
+                    """
+                    SELECT code, name, business_profile, version
+                    FROM erp.chart_of_account_templates
+                    WHERE code = %s AND is_active
+                    """,
+                    [template_code],
+                )
+                template = cursor.fetchone()
+                if template is None:
+                    raise APIError(
+                        code="CHART_TEMPLATE_NOT_FOUND",
+                        message="The requested chart-of-accounts template is unavailable.",
+                        status_code=404,
+                    )
+                if template[2] != requested_profile:
+                    raise APIError(
+                        code="BUSINESS_TYPE_TEMPLATE_MISMATCH",
+                        message="The chart template is not compatible with this business type.",
+                        details={
+                            "business_type": business_type,
+                            "template_business_profile": template[2],
+                        },
+                    )
+
+                current_template = company[1]
+                if current_template is not None and current_template != template_code:
+                    raise Conflict(
+                        "CHART_TEMPLATE_CHANGE_REQUIRES_REVIEW",
+                        "A different chart template has already been applied. Existing financial "
+                        "accounts cannot be replaced automatically.",
+                        {
+                            "current_template_code": current_template,
+                            "requested_template_code": template_code,
+                        },
+                    )
+
+                cursor.execute(
+                    """
+                    SELECT a.id, a.code, a.name, a.account_type, a.normal_balance,
+                           a.is_control_account, a.allow_posting, parent.code,
+                           a.source_template_code, a.source_template_account_code
+                    FROM erp.accounts a
+                    LEFT JOIN erp.accounts parent
+                      ON parent.company_id = a.company_id AND parent.id = a.parent_account_id
+                    WHERE a.company_id = %s
+                    """,
+                    [scope.company_id],
+                )
+                existing = {row[1]: row for row in cursor.fetchall()}
+                cursor.execute(
+                    """
+                    SELECT code, parent_code, name, account_type, normal_balance,
+                           is_control_account, allow_posting
+                    FROM erp.chart_of_account_template_accounts
+                    WHERE template_code = %s ORDER BY sort_order, code
+                    """,
+                    [template_code],
+                )
+                template_accounts = cursor.fetchall()
+
+                account_ids: dict[str, uuid.UUID | str] = {
+                    code: row[0] for code, row in existing.items()
+                }
+                created_codes: list[str] = []
+                existing_codes: list[str] = []
+                for account in template_accounts:
+                    code, parent_code, name, account_type, normal_balance = account[:5]
+                    is_control_account, allow_posting = account[5:]
+                    current = existing.get(code)
+                    if current is not None:
+                        from_this_template = (current[8], current[9]) == (template_code, code)
+                        current_shape = (
+                            current[2],
+                            current[3],
+                            current[4],
+                            current[5],
+                            current[6],
+                            current[7],
+                        )
+                        template_shape = (
+                            name,
+                            account_type,
+                            normal_balance,
+                            is_control_account,
+                            allow_posting,
+                            parent_code,
+                        )
+                        if not from_this_template and current_shape != template_shape:
+                            raise Conflict(
+                                "CHART_TEMPLATE_ACCOUNT_CONFLICT",
+                                "An existing account code has a different structural meaning.",
+                                {"account_code": code},
+                            )
+                        existing_codes.append(code)
+                        continue
+
+                    parent_id = account_ids.get(parent_code) if parent_code else None
+                    if parent_code and parent_id is None:
+                        raise Conflict(
+                            "CHART_TEMPLATE_PARENT_MISSING",
+                            "A template parent account could not be resolved.",
+                            {"account_code": code, "parent_code": parent_code},
+                        )
+                    cursor.execute(
+                        """
+                        INSERT INTO erp.accounts(
+                            company_id, parent_account_id, code, name, account_type,
+                            normal_balance, is_control_account, allow_posting, is_active,
+                            source_template_code, source_template_account_code
+                        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,true,%s,%s)
+                        RETURNING id
+                        """,
+                        [
+                            scope.company_id,
+                            parent_id,
+                            code,
+                            name,
+                            account_type,
+                            normal_balance,
+                            is_control_account,
+                            allow_posting,
+                            template_code,
+                            code,
+                        ],
+                    )
+                    account_id = cursor.fetchone()[0]
+                    account_ids[code] = account_id
+                    created_codes.append(code)
+
+                cursor.execute(
+                    """
+                    UPDATE erp.companies
+                    SET business_type = %s,
+                        chart_template_code = %s,
+                        chart_template_applied_at = COALESCE(
+                            chart_template_applied_at, clock_timestamp()
+                        )
+                    WHERE id = %s
+                    RETURNING chart_template_applied_at
+                    """,
+                    [business_type, template_code, scope.company_id],
+                )
+                applied_at = cursor.fetchone()[0]
+    except IntegrityError as exc:
+        raise _database_conflict(exc) from exc
+
+    return {
+        "business_type": business_type,
+        "template_code": template[0],
+        "template_name": template[1],
+        "template_version": template[3],
+        "applied_at": applied_at,
+        "created_count": len(created_codes),
+        "existing_count": len(existing_codes),
+        "created_account_codes": created_codes,
+    }
 
 
 def _insert_lines(company_id: uuid.UUID, entry_id: uuid.UUID, lines: list[dict[str, Any]]) -> None:

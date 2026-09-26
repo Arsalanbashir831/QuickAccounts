@@ -68,5 +68,7 @@ module = [
     "common.access.scopes",
     "apps.accounting.selectors.accounting",
     "apps.accounting.services.accounting",
+    "apps.parties.selectors",
+    "apps.parties.services",
 ]
 disable_error_code = ["arg-type", "no-any-return", "call-overload"]

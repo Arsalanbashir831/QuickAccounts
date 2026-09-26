@@ -28,6 +28,8 @@ class Account(models.Model):
     is_control_account = models.BooleanField(db_default=False)
     allow_posting = models.BooleanField(db_default=True)
     is_active = models.BooleanField(db_default=True)
+    source_template_code = models.TextField(null=True, blank=True)  # noqa: DJ001
+    source_template_account_code = models.TextField(null=True, blank=True)  # noqa: DJ001
     created_at = models.DateTimeField(db_default=clock_timestamp_default(), editable=False)
     updated_at = models.DateTimeField(db_default=clock_timestamp_default(), editable=False)
 
@@ -38,6 +40,48 @@ class Account(models.Model):
 
     def __str__(self) -> str:
         return f"{self.code} — {self.name}"
+
+
+class ChartOfAccountTemplate(models.Model):
+    class BusinessProfile(models.TextChoices):
+        RETAIL_WHOLESALE = "retail_wholesale", "Retail and wholesale"
+        ECOMMERCE = "ecommerce", "E-commerce"
+        MANUFACTURING = "manufacturing", "Manufacturing"
+
+    code = models.TextField(primary_key=True)
+    name = models.TextField()
+    business_profile = models.TextField(choices=BusinessProfile)
+    version = models.PositiveIntegerField()
+    is_active = models.BooleanField(db_default=True)
+    created_at = models.DateTimeField(db_default=clock_timestamp_default(), editable=False)
+
+    class Meta:
+        managed = False
+        db_table = '"erp"."chart_of_account_templates"'
+        unique_together = (("business_profile", "version"), ("code", "version"))
+
+    def __str__(self) -> str:
+        return f"{self.name} v{self.version}"
+
+
+class ChartOfAccountTemplateAccount(models.Model):
+    pk = models.CompositePrimaryKey("template_code", "code")
+    template_code = models.TextField()
+    code = models.TextField()
+    parent_code = models.TextField(null=True, blank=True)  # noqa: DJ001
+    name = models.TextField()
+    account_type = models.TextField(choices=Account.AccountType)
+    normal_balance = models.TextField(choices=Account.NormalBalance)
+    is_control_account = models.BooleanField(db_default=False)
+    allow_posting = models.BooleanField(db_default=True)
+    sort_order = models.PositiveIntegerField()
+
+    class Meta:
+        managed = False
+        db_table = '"erp"."chart_of_account_template_accounts"'
+
+    def __str__(self) -> str:
+        return f"{self.template_code}:{self.code} — {self.name}"
 
 
 class Journal(models.Model):

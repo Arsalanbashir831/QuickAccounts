@@ -2,6 +2,9 @@ from django.urls import path
 
 from apps.accounting.api.views import (
     AccountDetailView,
+    ChartTemplateApplyView,
+    ChartTemplateCollectionView,
+    ChartTemplateDetailView,
     ConfigCollectionView,
     EntryCollectionView,
     EntryDetailView,
@@ -14,6 +17,17 @@ from apps.accounting.api.views import (
 urlpatterns = [
     path("accounts", ConfigCollectionView.as_view(), {"resource": "accounts"}, name="account-list"),
     path("accounts/<uuid:account_id>", AccountDetailView.as_view(), name="account-detail"),
+    path("chart-templates", ChartTemplateCollectionView.as_view(), name="chart-template-list"),
+    path(
+        "chart-templates/<str:template_code>",
+        ChartTemplateDetailView.as_view(),
+        name="chart-template-detail",
+    ),
+    path(
+        "chart-templates/<str:template_code>/apply",
+        ChartTemplateApplyView.as_view(),
+        name="chart-template-apply",
+    ),
     path("journals", ConfigCollectionView.as_view(), {"resource": "journals"}, name="journal-list"),
     path("periods", ConfigCollectionView.as_view(), {"resource": "periods"}, name="period-list"),
     path(

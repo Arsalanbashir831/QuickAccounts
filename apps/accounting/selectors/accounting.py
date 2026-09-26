@@ -38,7 +38,8 @@ def fetch_one(sql: str, params: list[object]) -> dict[str, Any] | None:
 CONFIG_QUERIES = {
     "accounts": """
         SELECT id, parent_account_id, code, name, account_type, normal_balance,
-               is_control_account, allow_posting, is_active, created_at, updated_at
+               is_control_account, allow_posting, is_active, source_template_code,
+               source_template_account_code, created_at, updated_at
         FROM erp.accounts WHERE company_id = %s ORDER BY code, id LIMIT %s
     """,
     "journals": """
@@ -74,11 +75,71 @@ def account_detail(company_id: uuid.UUID, account_id: uuid.UUID) -> dict[str, An
     return fetch_one(
         """
         SELECT id, parent_account_id, code, name, account_type, normal_balance,
-               is_control_account, allow_posting, is_active, created_at, updated_at
+               is_control_account, allow_posting, is_active, source_template_code,
+               source_template_account_code, created_at, updated_at
         FROM erp.accounts WHERE company_id = %s AND id = %s
         """,
         [company_id, account_id],
     )
+
+
+BUSINESS_TYPES_BY_PROFILE = {
+    "retail_wholesale": ["retail", "wholesale"],
+    "ecommerce": ["ecommerce"],
+    "manufacturing": ["manufacturing"],
+}
+
+
+def list_chart_templates(company_id: uuid.UUID) -> dict[str, Any]:
+    company = fetch_one(
+        """
+        SELECT business_type, chart_template_code, chart_template_applied_at
+        FROM erp.companies WHERE id = %s
+        """,
+        [company_id],
+    )
+    templates = fetch_all(
+        """
+        SELECT t.code, t.name, t.business_profile, t.version, t.is_active,
+               count(a.code) AS account_count
+        FROM erp.chart_of_account_templates t
+        LEFT JOIN erp.chart_of_account_template_accounts a ON a.template_code = t.code
+        WHERE t.is_active
+        GROUP BY t.code, t.name, t.business_profile, t.version, t.is_active
+        ORDER BY t.business_profile, t.version DESC
+        """,
+        [],
+    )
+    for template in templates:
+        template["compatible_business_types"] = BUSINESS_TYPES_BY_PROFILE[
+            template["business_profile"]
+        ]
+    return {"company": company, "results": templates}
+
+
+def chart_template_detail(template_code: str) -> dict[str, Any] | None:
+    template = fetch_one(
+        """
+        SELECT code, name, business_profile, version, is_active, created_at
+        FROM erp.chart_of_account_templates WHERE code = %s
+        """,
+        [template_code],
+    )
+    if template is None:
+        return None
+    template["compatible_business_types"] = BUSINESS_TYPES_BY_PROFILE[
+        template["business_profile"]
+    ]
+    template["accounts"] = fetch_all(
+        """
+        SELECT code, parent_code, name, account_type, normal_balance,
+               is_control_account, allow_posting, sort_order
+        FROM erp.chart_of_account_template_accounts
+        WHERE template_code = %s ORDER BY sort_order, code
+        """,
+        [template_code],
+    )
+    return template
 
 
 def period_detail(company_id: uuid.UUID, period_id: uuid.UUID) -> dict[str, Any] | None:

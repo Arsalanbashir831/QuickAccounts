@@ -6,6 +6,8 @@ from django.db import connection
 from apps.accounting.models import (
     Account,
     AccountingPostingRule,
+    ChartOfAccountTemplate,
+    ChartOfAccountTemplateAccount,
     DimensionType,
     DimensionValue,
     DocumentSequence,
@@ -43,6 +45,8 @@ def test_accounting_models_map_to_postgresql_schema() -> None:
     models = (
         Account,
         AccountingPostingRule,
+        ChartOfAccountTemplate,
+        ChartOfAccountTemplateAccount,
         DimensionType,
         DimensionValue,
         DocumentSequence,

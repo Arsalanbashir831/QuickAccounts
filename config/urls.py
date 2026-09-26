@@ -29,6 +29,10 @@ urlpatterns = [
         include("apps.module_access.api.urls"),
     ),
     path(
+        "api/v1/tenants/<uuid:tenant_id>/companies/<uuid:company_id>/",
+        include("apps.parties.api.urls"),
+    ),
+    path(
         "api/v1/tenants/<uuid:tenant_id>/companies/<uuid:company_id>/reports/",
         include("apps.reporting.api.urls"),
     ),

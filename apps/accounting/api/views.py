@@ -14,6 +14,7 @@ from rest_framework.views import APIView
 from apps.accounting.api.serializers import (
     AccountPatchSerializer,
     AccountSerializer,
+    ChartTemplateApplySerializer,
     DimensionTypeSerializer,
     DimensionValueSerializer,
     JournalEntryCreateSerializer,
@@ -26,15 +27,19 @@ from apps.accounting.api.serializers import (
 )
 from apps.accounting.selectors.accounting import (
     account_detail,
+    chart_template_detail,
     entry_detail,
     ledger,
+    list_chart_templates,
     list_config,
     list_entries,
 )
 from apps.accounting.services.accounting import (
+    apply_chart_template,
     change_period_state,
     create_config,
     create_entry,
+    delete_account,
     post_entry,
     reverse_entry,
     update_account,
@@ -145,6 +150,81 @@ class AccountDetailView(APIView):
         with company_read_scope(scope, permission="accounting.view"):
             account = account_detail(company_id, account_id)
         return Response(account)
+
+    @extend_schema(responses={204: None}, operation_id="accounting_account_delete")
+    def delete(
+        self,
+        request: Request,
+        tenant_id: uuid.UUID,
+        company_id: uuid.UUID,
+        account_id: uuid.UUID,
+    ) -> Response:
+        delete_account(_scope(request, tenant_id, company_id), account_id)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ChartTemplateCollectionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses=OpenApiTypes.OBJECT, operation_id="accounting_chart_template_list")
+    def get(
+        self,
+        request: Request,
+        tenant_id: uuid.UUID,
+        company_id: uuid.UUID,
+    ) -> Response:
+        scope = _scope(request, tenant_id, company_id)
+        with company_read_scope(scope, permission="accounting.view"):
+            result = list_chart_templates(company_id)
+        return Response(result)
+
+
+class ChartTemplateDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses=OpenApiTypes.OBJECT, operation_id="accounting_chart_template_retrieve")
+    def get(
+        self,
+        request: Request,
+        tenant_id: uuid.UUID,
+        company_id: uuid.UUID,
+        template_code: str,
+    ) -> Response:
+        scope = _scope(request, tenant_id, company_id)
+        with company_read_scope(scope, permission="accounting.view"):
+            template = chart_template_detail(template_code)
+            if template is None:
+                raise APIError(
+                    code="CHART_TEMPLATE_NOT_FOUND",
+                    message="The requested chart-of-accounts template is unavailable.",
+                    status_code=404,
+                )
+        return Response(template)
+
+
+class ChartTemplateApplyView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=ChartTemplateApplySerializer,
+        responses=OpenApiTypes.OBJECT,
+        operation_id="accounting_chart_template_apply",
+    )
+    def post(
+        self,
+        request: Request,
+        tenant_id: uuid.UUID,
+        company_id: uuid.UUID,
+        template_code: str,
+    ) -> Response:
+        serializer = ChartTemplateApplySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = apply_chart_template(
+            _scope(request, tenant_id, company_id),
+            template_code=template_code,
+            business_type=serializer.validated_data["business_type"],
+        )
+        return Response(result, status=status.HTTP_200_OK)
 
 
 class PeriodCommandView(APIView):
