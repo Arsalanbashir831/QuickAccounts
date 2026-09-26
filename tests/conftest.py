@@ -30,7 +30,7 @@ def accounting_context(db: object, settings: object) -> dict[str, object]:
             "INSERT INTO erp.currencies(code,name,minor_units) VALUES ('USD','US Dollar',2) "
             "ON CONFLICT DO NOTHING"
         )
-        cursor.execute("INSERT INTO erp.tenants(id,name) VALUES (%s,'API tenant')", [ids["tenokant"]])
+        cursor.execute("INSERT INTO erp.tenants(id,name) VALUES (%s,'API tenant')", [ids["tenant"]])
         cursor.execute(
             """
             INSERT INTO erp.companies(id,tenant_id,code,legal_name,functional_currency)

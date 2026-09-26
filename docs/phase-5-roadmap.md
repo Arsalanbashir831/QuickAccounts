@@ -9,7 +9,7 @@ the source-document boundary from the authoritative architecture.
 | P5.1a | Partner revision, permission, and audit database contract | Phase 4 access foundation | Migration/schema contract tests | Complete |
 | P5.1b | Company-scoped partner list/create/detail/update API | P5.1a | CRUD, pagination, permission, duplicate, and stale-revision API tests | Complete |
 | P5.2 | Partner addresses and effective-dated tax registrations | P5.1 | Address ownership/default validation; registration jurisdiction/date tests | Complete |
-| P5.3 | Shared item/service catalog and accounting profiles | P5.1 | Item lifecycle, service-without-inventory, mapping, and revision tests | Not started |
+| P5.3 | Shared item/service catalog and accounting profiles | P5.1 | Item lifecycle, service-without-inventory, mapping, and revision tests | Complete |
 | P5.4 | Sales invoice draft aggregate and deterministic calculation | P5.2–P5.3 | SAL-001–SAL-003 and SAL-010 | Not started |
 | P5.5 | Sales posting and linked credit corrections | P5.4 | SAL-004–SAL-009, idempotency, concurrency, and reconciliation | Not started |
 | P5.6 | Purchase bill drafts, posting, and supplier credits | P5.2–P5.3 | PUR-001–PUR-004 and reconciliation | Not started |

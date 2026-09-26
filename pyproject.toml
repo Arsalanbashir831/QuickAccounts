@@ -70,5 +70,7 @@ module = [
     "apps.accounting.services.accounting",
     "apps.parties.selectors",
     "apps.parties.services",
+    "apps.inventory.selectors",
+    "apps.inventory.services",
 ]
 disable_error_code = ["arg-type", "no-any-return", "call-overload"]
