@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="220" height="220" viewBox="0 0 220 220" role="img" aria-labelledby="title desc">
+  <title id="title">QuickAccounts mark</title>
+  <desc id="desc">A stylized dark Q with a warm orange dot accent.</desc>
+  <circle cx="100" cy="102" r="70" fill="none" stroke="#111111" stroke-width="23"/>
+  <path d="M100 102 L151 153" fill="none" stroke="#111111" stroke-width="23" stroke-linecap="round"/>
+  <circle cx="151" cy="31" r="14" fill="#F36B21"/>
+</svg>
+

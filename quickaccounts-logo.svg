@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="220" viewBox="0 0 960 220" role="img" aria-labelledby="title desc">
+  <title id="title">QuickAccounts logo</title>
+  <desc id="desc">A rounded dark wordmark with a warm orange dot accent and a stylized Q symbol.</desc>
+  <g transform="translate(18 22)">
+    <circle cx="78" cy="88" r="58" fill="none" stroke="#111111" stroke-width="19"/>
+    <path d="M78 88 L119 129" fill="none" stroke="#111111" stroke-width="19" stroke-linecap="round"/>
+    <circle cx="119" cy="29" r="11" fill="#F36B21"/>
+  </g>
+  <text x="166" y="142"
+        fill="#111111"
+        font-family="Poppins, Nunito Sans, Inter, Arial, sans-serif"
+        font-size="76"
+        font-weight="700"
+        letter-spacing="-3">QuickAccounts</text>
+  <rect x="168" y="168" width="250" height="6" rx="3" fill="#F36B21"/>
+</svg>
+

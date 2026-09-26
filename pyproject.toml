@@ -1,0 +1,72 @@
+[project]
+name = "quickaccounts-backend"
+version = "0.1.0"
+description = "Multi-tenant ERP accounting backend"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "celery[redis]>=5.5,<5.6",
+    "django>=5.2,<5.3",
+    "django-environ>=0.12,<0.13",
+    "django-redis>=6,<7",
+    "djangorestframework>=3.16,<3.17",
+    "drf-spectacular>=0.29,<0.30",
+    "gunicorn>=23,<24",
+    "psycopg[binary,pool]>=3.2,<3.4",
+]
+
+[dependency-groups]
+dev = [
+    "django-stubs>=5.2,<5.3",
+    "djangorestframework-stubs>=3.16,<3.17",
+    "mypy>=1.18,<2",
+    "pytest>=8.4,<9",
+    "pytest-django>=4.11,<5",
+    "pytest-xdist>=3.8,<4",
+    "ruff>=0.13,<0.14",
+]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.test"
+python_files = ["test_*.py"]
+testpaths = ["tests"]
+markers = [
+    "unit: isolated unit tests",
+    "integration: PostgreSQL integration tests",
+    "api: API contract tests",
+    "security: authorization and isolation tests",
+    "concurrency: multi-connection race tests",
+    "p0: release-blocking tests",
+    "p1: high-priority tests",
+    "slow: long-running tests",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "DJ"]
+
+[tool.mypy]
+python_version = "3.13"
+plugins = ["mypy_django_plugin.main"]
+strict = true
+
+[tool.django-stubs]
+django_settings_module = "config.settings.test"
+
+[[tool.mypy.overrides]]
+module = ["celery.*", "environ.*", "rest_framework.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["apps.*.api.serializers"]
+disable_error_code = ["type-arg", "arg-type", "call-arg"]
+
+[[tool.mypy.overrides]]
+module = [
+    "common.access.scopes",
+    "apps.accounting.selectors.accounting",
+    "apps.accounting.services.accounting",
+]
+disable_error_code = ["arg-type", "no-any-return", "call-overload"]
