@@ -1095,24 +1095,32 @@ def _stock_effects(
     with connection.cursor() as cursor:
         cursor.execute(
             """
-            SELECT l.id,l.item_id,l.quantity,l.net_amount,i.track_lots,i.track_serials
+            SELECT l.id,l.item_id,l.quantity,l.net_amount,
+                   coalesce(sum(c.tax_amount - c.recoverable_amount),0),
+                   i.track_lots,i.track_serials
             FROM erp.purchase_bill_lines l
             JOIN erp.items i ON i.company_id=l.company_id AND i.id=l.item_id
+            LEFT JOIN erp.purchase_bill_tax_components c
+              ON c.company_id=l.company_id AND c.purchase_bill_id=l.purchase_bill_id
+             AND c.purchase_bill_line_id=l.id
             WHERE l.company_id=%s AND l.purchase_bill_id=%s AND i.item_kind='stock'
+            GROUP BY l.id,l.item_id,l.quantity,l.net_amount,i.track_lots,i.track_serials
             ORDER BY l.item_id,l.id
             """,
             [scope.company_id, bill_id],
         )
         stock_lines = cursor.fetchall()
-    if any(row[4] or row[5] for row in stock_lines):
+    if any(row[5] or row[6] for row in stock_lines):
         raise Conflict(
             "TRACKED_STOCK_RECEIPT_REQUIRED",
             "Lot- or serial-tracked items require a typed goods-receipt workflow.",
         )
     with connection.cursor() as cursor:
-        for line_id, item_id, quantity, net_amount, _, _ in stock_lines:
+        for line_id, item_id, quantity, net_amount, nonrecoverable_tax, _, _ in stock_lines:
             value = _money(
-                cast(decimal.Decimal, net_amount) * exchange_rate, functional_minor_units
+                (cast(decimal.Decimal, net_amount) + cast(decimal.Decimal, nonrecoverable_tax))
+                * exchange_rate,
+                functional_minor_units,
             )
             unit_cost = (value / cast(decimal.Decimal, quantity)).quantize(
                 decimal.Decimal("0.000001"), rounding=decimal.ROUND_HALF_UP
@@ -1187,10 +1195,11 @@ def post_purchase_bill(
             )
             if inventory_preflight is None:
                 raise ScopeNotFound()
-            if inventory_preflight[0] == "supplier_credit" and warehouse_id is not None:
+            if inventory_preflight[0] == "supplier_credit" and inventory_preflight[1]:
                 raise Conflict(
-                    "CREDIT_RETURN_WORKFLOW_REQUIRED",
-                    "Physical returns must use the typed inventory return workflow.",
+                    "STOCK_SUPPLIER_CREDIT_UNSUPPORTED",
+                    "Supplier credits for stocked bills require an inventory-cost "
+                    "adjustment workflow.",
                 )
             if inventory_preflight[0] == "bill" and inventory_preflight[1]:
                 if warehouse_id is None:
@@ -1336,16 +1345,23 @@ def post_purchase_bill(
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT id,net_amount,tax_amount,gross_amount
-                    FROM erp.purchase_bill_lines
-                    WHERE company_id=%s AND purchase_bill_id=%s ORDER BY line_no
+                    SELECT l.id,l.net_amount,l.tax_amount,l.gross_amount,
+                           coalesce(sum(c.tax_amount),0),
+                           coalesce(sum(c.recoverable_amount),0)
+                    FROM erp.purchase_bill_lines l
+                    LEFT JOIN erp.purchase_bill_tax_components c
+                      ON c.company_id=l.company_id AND c.purchase_bill_id=l.purchase_bill_id
+                     AND c.purchase_bill_line_id=l.id
+                    WHERE l.company_id=%s AND l.purchase_bill_id=%s
+                    GROUP BY l.id,l.net_amount,l.tax_amount,l.gross_amount,l.line_no
+                    ORDER BY l.line_no
                     """,
                     [scope.company_id, bill_id],
                 )
                 document_lines = cursor.fetchall()
                 cursor.execute(
                     """
-                    SELECT input_tax_account_id_snapshot,sum(tax_amount)
+                    SELECT input_tax_account_id_snapshot,sum(recoverable_amount)
                     FROM erp.purchase_bill_tax_components
                     WHERE company_id=%s AND purchase_bill_id=%s
                     GROUP BY input_tax_account_id_snapshot
@@ -1359,11 +1375,17 @@ def post_purchase_bill(
             purchase_totals: dict[uuid.UUID, decimal.Decimal] = {}
             functional_totals: dict[uuid.UUID, decimal.Decimal] = {}
             gross_total = decimal.Decimal(0)
-            for line_id, net, _, gross in document_lines:
+            for line_id, net, _, gross, total_tax, recoverable_tax in document_lines:
                 account_id = purchase_accounts[line_id]
-                functional = _money(net * exchange_rate, functional_minor_units)
+                # Total tax is already represented by gross; only the unrecoverable
+                # portion belongs in the purchase/inventory account.
+                nonrecoverable_tax = cast(decimal.Decimal, total_tax) - cast(
+                    decimal.Decimal, recoverable_tax
+                )
+                transaction_amount = cast(decimal.Decimal, net) + nonrecoverable_tax
+                functional = _money(transaction_amount * exchange_rate, functional_minor_units)
                 purchase_totals[account_id] = (
-                    purchase_totals.get(account_id, decimal.Decimal(0)) + net
+                    purchase_totals.get(account_id, decimal.Decimal(0)) + transaction_amount
                 )
                 functional_totals[account_id] = (
                     functional_totals.get(account_id, decimal.Decimal(0)) + functional

@@ -475,6 +475,7 @@ def test_purchase_bill_bounds_and_company_hidden_id(
 
     hidden_id = uuid.uuid4()
     hidden_company = uuid.uuid4()
+    hidden_supplier = uuid.uuid4()
     with connection.cursor() as cursor:
         cursor.execute(
             """
@@ -485,11 +486,19 @@ def test_purchase_bill_bounds_and_company_hidden_id(
         )
         cursor.execute(
             """
-            INSERT INTO erp.purchase_bills(
-                id,company_id,bill_no,bill_date,tax_point_date,currency_code
-            ) VALUES (%s,%s,'HIDDEN-P56','2026-09-27','2026-09-27','USD')
+            INSERT INTO erp.business_partners(
+                id,company_id,partner_code,display_name,partner_kind
+            ) VALUES (%s,%s,'HIDDEN-SUPPLIER','Hidden supplier','supplier')
             """,
-            [hidden_id, hidden_company],
+            [hidden_supplier, hidden_company],
+        )
+        cursor.execute(
+            """
+            INSERT INTO erp.purchase_bills(
+                id,company_id,bill_no,supplier_id,bill_date,tax_point_date,currency_code
+            ) VALUES (%s,%s,'HIDDEN-P56',%s,'2026-09-27','2026-09-27','USD')
+            """,
+            [hidden_id, hidden_company, hidden_supplier],
         )
     hidden = client.get(f"{bills_url}/{hidden_id}")
     assert hidden.status_code == 404

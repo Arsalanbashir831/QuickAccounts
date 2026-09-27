@@ -237,6 +237,49 @@ def test_post_rejects_missing_registration_without_partial_effects(
 @pytest.mark.api
 @pytest.mark.p0
 @pytest.mark.django_db(transaction=True)
+def test_post_allocates_partial_recoverable_tax_correctly(
+    accounting_context: dict[str, object],
+) -> None:
+    client = accounting_context["client"]
+    assert isinstance(client, APIClient)
+    _enable_purchasing(client, accounting_context)
+    ids = _seed_purchase_facts(accounting_context)
+    posting = _seed_posting_configuration(accounting_context, ids)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "UPDATE erp.tax_rate_versions SET recovery_percent=50 WHERE id=%s",
+            [ids["rate_version"]],
+        )
+    bill = _create_calculated_bill(client, accounting_context, ids, "DRAFT-P56-RECOVERY")
+    posted = client.post(
+        f"{_root(accounting_context)}/purchasing/bills/{bill['id']}/post",
+        _post_payload(accounting_context, posting),
+        format="json",
+        HTTP_IF_MATCH='"2"',
+        HTTP_IDEMPOTENCY_KEY="post-partial-recovery-p56",
+    )
+    assert posted.status_code == 200, posted.json()
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT a.account_type,l.debit_amount,l.credit_amount
+            FROM erp.journal_lines l
+            JOIN erp.accounts a ON a.company_id=l.company_id AND a.id=l.account_id
+            WHERE l.company_id=%s AND l.journal_entry_id=%s
+            ORDER BY l.line_no
+            """,
+            [accounting_context["company"], posted.json()["journal_entry_id"]],
+        )
+        lines = cursor.fetchall()
+    assert lines[0][0] == "payable"
+    assert lines[0][2] == 110
+    assert (lines[1][0], lines[1][1], lines[1][2]) == ("expense", 105, 0)
+    assert (lines[2][0], lines[2][1], lines[2][2]) == ("asset", 5, 0)
+
+
+@pytest.mark.api
+@pytest.mark.p0
+@pytest.mark.django_db(transaction=True)
 def test_post_denied_in_purchasing_read_only_mode_without_effects(
     accounting_context: dict[str, object],
 ) -> None:
@@ -359,6 +402,29 @@ def test_stock_bill_requires_inventory_and_posts_receipt_effects(
             [accounting_context["company"], warehouse, stock_item],
         )
         assert cursor.fetchone() == (2, 100)
+
+    credit = client.post(
+        f"{bills_url}/{posted.json()['id']}/credit-notes",
+        {
+            "bill_no": "DRAFT-P56-STOCK-CREDIT",
+            "bill_date": "2026-09-28",
+            "source_line_ids": [posted.json()["lines"][0]["id"]],
+        },
+        format="json",
+    )
+    assert credit.status_code == 201, credit.json()
+    blocked_credit = client.post(
+        f"{bills_url}/{credit.json()['id']}/post",
+        _post_payload(accounting_context, posting),
+        format="json",
+        HTTP_IF_MATCH='"1"',
+        HTTP_IDEMPOTENCY_KEY="post-stock-credit-p56",
+    )
+    assert blocked_credit.status_code == 409, blocked_credit.json()
+    assert blocked_credit.json()["error"]["code"] == "STOCK_SUPPLIER_CREDIT_UNSUPPORTED"
+    credit_after = client.get(f"{bills_url}/{credit.json()['id']}")
+    assert credit_after.status_code == 200, credit_after.json()
+    assert credit_after.json()["status"] == "draft"
 
 
 @pytest.mark.concurrency

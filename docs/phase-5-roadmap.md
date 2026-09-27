@@ -12,13 +12,28 @@ the source-document boundary from the authoritative architecture.
 | P5.3 | Shared item/service catalog and accounting profiles | P5.1 | Item lifecycle, service-without-inventory, mapping, and revision tests | Complete |
 | P5.4 | Sales invoice draft aggregate and deterministic calculation | P5.2–P5.3 | SAL-001–SAL-003 and SAL-010 | Complete |
 | P5.5 | Sales posting and linked credit corrections | P5.4 | SAL-004–SAL-009, idempotency, concurrency, and reconciliation | Complete |
-| P5.6 | Purchase bill drafts, posting, and supplier credits | P5.2–P5.3 | PUR-001–PUR-004 and reconciliation | Not started |
-| P5.7 | Payments, withholding, AR/AP allocation, and reversal | P5.5–P5.6 | PAY-001–PAY-006, over-allocation race, and historical aging | Not started |
+| P5.6 | Purchase bill drafts, posting, and supplier credits | P5.2–P5.3 | PUR-001–PUR-004 and reconciliation | Complete |
+| P5.7 | Payments, withholding, AR/AP allocation, and reversal | P5.5–P5.6 | PAY-001–PAY-006, over-allocation race, and historical aging | Complete |
 | P5.8 | Warehouses, stock documents, reservations, and availability | P5.3 | INV-001–INV-008 and reservation concurrency | Not started |
 | P5.9 | Inventory costing, cost allocation, and rebuildable projections | P5.8 | INV-009 and valuation-to-GL reconciliation | Not started |
 | P5.10 | Versioned BOMs and production-order drafts | P5.3, P5.8 | MFG-001, MFG-002, and MFG-007 | Not started |
 | P5.11 | Material issues, outputs, completion, and cancellation | P5.9–P5.10 | MFG-003–MFG-006 and duplicate-command races | Not started |
 | P5.12 | Cross-domain release gate | P5.1–P5.11 | Full API, schema, RLS, concurrency, OpenAPI, lint, type, and migration gates | Not started |
+
+### P5.7 implementation slices
+
+| Slice | Scope | Exit criteria | Status |
+|---|---|---|---|
+| P5.7.1 | Payment draft aggregate and CRUD | Company-scoped receipt/disbursement drafts with revision and idempotent creation | Complete |
+| P5.7.2 | Withholding calculation and immutable snapshots | Payment withholding components reconcile exactly to `withholding_total` | Complete |
+| P5.7.3 | Draft allocation proposals | Bounded AR/AP allocation replacement with currency and direction validation | Complete |
+| P5.7.4 | Atomic payment posting | Cash, withholding, allocations, GL, audit, outbox, and idempotency commit together | Complete |
+| P5.7.5 | Allocation race and reversal | Locked open-item settlement, compensating reversal, and no over-allocation | Complete |
+| P5.7.6 | Settlement reporting | Current open items and cutoff aging reconcile before/after allocation and reversal | Complete |
+
+P5.7 supports same-currency, matching-exchange-rate settlement; incompatible conversions
+are rejected before posting. The payment contract and verification mapping are documented in
+[`phase-5-p7-payment-contract.md`](phase-5-p7-payment-contract.md).
 
 ## Product-decision checkpoints
 

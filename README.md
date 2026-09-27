@@ -51,6 +51,9 @@ uv run celery -A config beat --loglevel=INFO
   revisions, and deterministic effective-dated local tax calculation
 - Atomic, idempotent sales-invoice posting with balanced journal and optional untracked-stock
   effects, plus source-linked full-line credit notes with reversed AR, revenue, and tax polarity
+- Purchase-bill drafts, deterministic input-tax allocation, atomic posting, and linked supplier credits
+- Payment draft CRUD, withholding snapshots, locked AR/AP allocations, atomic posting and reversal
+- Current open receivables/payables and cutoff aging, including signed unapplied payment balances
 - Tenant license summaries, activation allocation/cleanup, and renewal-order creation
 - Platform-operator license issuance, suspension/revocation, and plan-version publication
 - `/api/schema` and `/api/docs` for the generated OpenAPI contract
@@ -78,8 +81,10 @@ PgBouncer transaction pooling compatibility.
 
 Accounting Phase 3 and access/licensing Phase 4 are implemented. Phase 5 is underway: partner
 master data, the shared item/service catalog, item accounting profiles, deterministic
-sales-invoice calculation, atomic posting, and linked credit corrections are complete; purchase
-bill drafts, posting, and supplier credits are next. Phase 4 includes effective
+sales-invoice calculation, atomic posting, linked credit corrections, purchase bill drafts,
+atomic posting, and linked supplier credits are complete. P5.7 adds payment settlement,
+withholding, allocation concurrency guards, compensating reversal, and historical aging.
+Phase 4 includes effective
 capabilities, revision-checked and idempotent module policy changes, dependency and entitlement
 validation, audit/outbox persistence, license summaries, activation quota enforcement,
 explicit credential redemption and tenant/product binding, renewal-order creation, stable expiry
