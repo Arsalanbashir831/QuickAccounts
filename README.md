@@ -47,6 +47,10 @@ uv run celery -A config beat --loglevel=INFO
 - Company-scoped business-partner search/create/detail/update with revision and audit controls
 - Partner address list/create/versioned-update and effective-dated tax-registration list/create
 - Shared stock/non-stock/service item catalog, UOM lookup, and item accounting profiles
+- Sales-invoice draft aggregates with bounded line replacement, address snapshots, optimistic
+  revisions, and deterministic effective-dated local tax calculation
+- Atomic, idempotent sales-invoice posting with balanced journal and optional untracked-stock
+  effects, plus source-linked full-line credit notes with reversed AR, revenue, and tax polarity
 - Tenant license summaries, activation allocation/cleanup, and renewal-order creation
 - Platform-operator license issuance, suspension/revocation, and plan-version publication
 - `/api/schema` and `/api/docs` for the generated OpenAPI contract
@@ -73,8 +77,9 @@ PgBouncer transaction pooling compatibility.
 ## Current boundary
 
 Accounting Phase 3 and access/licensing Phase 4 are implemented. Phase 5 is underway: partner
-master data, the shared item/service catalog, and item accounting profiles are complete; sales
-invoice drafts and deterministic calculation are next. Phase 4 includes effective
+master data, the shared item/service catalog, item accounting profiles, deterministic
+sales-invoice calculation, atomic posting, and linked credit corrections are complete; purchase
+bill drafts, posting, and supplier credits are next. Phase 4 includes effective
 capabilities, revision-checked and idempotent module policy changes, dependency and entitlement
 validation, audit/outbox persistence, license summaries, activation quota enforcement,
 explicit credential redemption and tenant/product binding, renewal-order creation, stable expiry

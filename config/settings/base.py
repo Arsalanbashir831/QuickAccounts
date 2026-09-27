@@ -107,6 +107,10 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "QuickAccounts ERP Accounting API",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    "ENUM_NAME_OVERRIDES": {
+        "PartnerAddressKindEnum": ["billing", "shipping", "registered", "other"],
+        "InvoiceAddressKindEnum": ["billing", "shipping"],
+    },
 }
 
 AUTH_PASSWORD_VALIDATORS = [
