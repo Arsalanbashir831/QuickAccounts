@@ -1,5 +1,17 @@
 from django.urls import path
 
+from apps.sales.api.returns import (
+    ReturnApplyCreditView,
+    ReturnCollectionView,
+    ReturnDetailView,
+    ReturnInspectView,
+    ReturnPostView,
+    ReturnRefundView,
+    ReturnReplacementView,
+    ReturnStockDispositionView,
+    ReturnSummaryView,
+    ReturnVoidView,
+)
 from apps.sales.api.views import (
     SalesCreditNoteCollectionView,
     SalesInvoiceCalculateView,
@@ -9,6 +21,44 @@ from apps.sales.api.views import (
 )
 
 urlpatterns = [
+    path(
+        "sales/returns/<uuid:return_id>/stock-dispositions",
+        ReturnStockDispositionView.as_view(),
+        name="sale-return-stock-dispose",
+    ),
+    path(
+        "sales/invoices/<uuid:invoice_id>/return-eligibility",
+        ReturnSummaryView.as_view(),
+        name="sale-return-eligibility",
+    ),
+    path("sales/returns/<uuid:return_id>/void", ReturnVoidView.as_view(), name="sale-return-void"),
+    path(
+        "sales/returns/<uuid:return_id>/apply-credit",
+        ReturnApplyCreditView.as_view(),
+        name="sale-return-apply-credit",
+    ),
+    path(
+        "sales/invoices/<uuid:invoice_id>/returns",
+        ReturnCollectionView.as_view(),
+        name="sale-return-list",
+    ),
+    path("sales/returns/<uuid:return_id>", ReturnDetailView.as_view(), name="sale-return-detail"),
+    path(
+        "sales/returns/<uuid:return_id>/inspect",
+        ReturnInspectView.as_view(),
+        name="sale-return-inspect",
+    ),
+    path("sales/returns/<uuid:return_id>/post", ReturnPostView.as_view(), name="sale-return-post"),
+    path(
+        "sales/returns/<uuid:return_id>/refund",
+        ReturnRefundView.as_view(),
+        name="sale-return-refund",
+    ),
+    path(
+        "sales/returns/<uuid:return_id>/replace",
+        ReturnReplacementView.as_view(),
+        name="sale-return-replace",
+    ),
     path("sales/invoices", SalesInvoiceCollectionView.as_view(), name="sales-invoice-list"),
     path(
         "sales/invoices/<uuid:invoice_id>",

@@ -1093,7 +1093,8 @@ def _stock_effects(
     functional_currency: str,
 ) -> list[dict[str, Any]]:
     warehouse = _execute(
-        "SELECT 1 FROM erp.warehouses WHERE company_id=%s AND id=%s AND is_active FOR SHARE",
+        "SELECT 1 FROM erp.warehouses WHERE company_id=%s AND id=%s "
+        "AND is_active AND stock_category='sellable' FOR SHARE",
         [scope.company_id, warehouse_id],
     )
     if warehouse is None:
@@ -1203,6 +1204,7 @@ def post_sales_invoice(
     expected_revision: int,
     idempotency_key: str,
     request_id: str | None,
+    _nested: bool = False,
 ) -> tuple[dict[str, Any], int]:
     payload = {
         "invoice_id": str(invoice_id),
@@ -1210,7 +1212,7 @@ def post_sales_invoice(
         **command,
     }
     try:
-        with transaction.atomic(durable=True):
+        with transaction.atomic(durable=not _nested):
             bind_and_verify_company(scope)
             receipt = _claim_receipt(
                 scope,
@@ -1566,6 +1568,20 @@ def create_linked_credit_note(
                 raise APIError(
                     code="INVALID_CREDIT_SOURCE_LINE",
                     message="A selected credit source line is unavailable.",
+                )
+            if (
+                _execute(
+                    "SELECT 1 FROM erp.sales_return_lines l JOIN erp.sales_returns r "
+                    "ON r.company_id=l.company_id AND r.id=l.sales_return_id "
+                    "WHERE l.company_id=%s AND l.sales_invoice_line_id=ANY(%s::uuid[]) "
+                    "AND r.status='posted' LIMIT 1",
+                    [scope.company_id, selected],
+                )
+                is not None
+            ):
+                raise Conflict(
+                    "INVOICE_LINE_HAS_RETURN_ADJUSTMENTS",
+                    "Use linked return adjustments for lines already partially credited.",
                 )
             credit_id = uuid.uuid4()
             _set_context(request_id, "sales_invoice.credit_note.created")

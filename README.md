@@ -47,6 +47,8 @@ uv run celery -A config beat --loglevel=INFO
 - Company-scoped business-partner search/create/detail/update with revision and audit controls
 - Partner address list/create/versioned-update and effective-dated tax-registration list/create
 - Shared stock/non-stock/service item catalog, UOM lookup, and item accounting profiles
+- Revisioned warehouse management and stock balances with sellable/quarantine/damaged/
+  supplier-return segregation; non-sellable locations reject sales and reservations
 - Sales-invoice draft aggregates with bounded line replacement, address snapshots, optimistic
   revisions, and deterministic effective-dated local tax calculation
 - Atomic, idempotent sales-invoice posting with balanced journal and optional untracked-stock
@@ -97,7 +99,12 @@ boundaries across month-end and DST.
 Verified payment-provider fulfillment and webhook processing remain Phase 6 integration work.
 Signed offline grants remain disabled until a signing service and its subject/audience/signature
 verification contract are selected. Inventory policy/costing, country tax packs, and
-returns/refunds remain explicit product decisions from the supplied test plan and are not guessed.
+unsupported returns/refunds remain explicit product decisions and are not guessed.
+
+Linked customer returns, inspection, historical-cost stock disposition, confirmed
+cash refunds and replacement invoice settlement are implemented under the approved
+conservative rules. See [the return flow contract](docs/return-stock-implementation-plan.md)
+for endpoints, accounting effects and supported currency/stock boundaries.
 
 Phase 5 is split into bounded delivery and verification checkpoints in
 [`docs/phase-5-roadmap.md`](docs/phase-5-roadmap.md).

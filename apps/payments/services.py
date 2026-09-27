@@ -345,6 +345,13 @@ def _validate_allocations(
             "AND r.payment_date<=%s)",
             [company_id, doc_id, payment["payment_date"]],
         )[0]["amount"]
+        if payment["direction"] == "receipt":
+            applied += _rows(
+                "SELECT coalesce(sum(amount),0) AS amount "
+                "FROM erp.sales_return_credit_applications "
+                "WHERE company_id=%s AND sales_invoice_id=%s",
+                [company_id, doc_id],
+            )[0]["amount"]
         if applied + amount > gross:
             raise Conflict(
                 "ALLOCATION_EXCEEDS_REMAINING", "Allocation exceeds the remaining balance."

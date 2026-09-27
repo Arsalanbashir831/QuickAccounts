@@ -14,7 +14,7 @@ the source-document boundary from the authoritative architecture.
 | P5.5 | Sales posting and linked credit corrections | P5.4 | SAL-004–SAL-009, idempotency, concurrency, and reconciliation | Complete |
 | P5.6 | Purchase bill drafts, posting, and supplier credits | P5.2–P5.3 | PUR-001–PUR-004 and reconciliation | Complete |
 | P5.7 | Payments, withholding, AR/AP allocation, and reversal | P5.5–P5.6 | PAY-001–PAY-006, over-allocation race, and historical aging | Complete |
-| P5.8 | Warehouses, stock documents, reservations, and availability | P5.3 | INV-001–INV-008 and reservation concurrency | Not started |
+| P5.8 | Warehouses, stock documents, reservations, and availability | P5.3 | INV-001–INV-008 and reservation concurrency | In progress: warehouse segregation and balance API verified; stock documents pending |
 | P5.9 | Inventory costing, cost allocation, and rebuildable projections | P5.8 | INV-009 and valuation-to-GL reconciliation | Not started |
 | P5.10 | Versioned BOMs and production-order drafts | P5.3, P5.8 | MFG-001, MFG-002, and MFG-007 | Not started |
 | P5.11 | Material issues, outputs, completion, and cancellation | P5.9–P5.10 | MFG-003–MFG-006 and duplicate-command races | Not started |

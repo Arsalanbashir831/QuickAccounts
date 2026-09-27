@@ -64,6 +64,10 @@ module = ["apps.*.api.serializers"]
 disable_error_code = ["type-arg", "arg-type", "call-arg"]
 
 [[tool.mypy.overrides]]
+module = ["apps.sales.api.returns"]
+disable_error_code = ["type-arg", "call-arg"]
+
+[[tool.mypy.overrides]]
 module = [
     "common.access.scopes",
     "apps.accounting.selectors.accounting",
