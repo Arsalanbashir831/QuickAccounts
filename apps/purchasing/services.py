@@ -1195,12 +1195,29 @@ def post_purchase_bill(
             )
             if inventory_preflight is None:
                 raise ScopeNotFound()
-            if inventory_preflight[0] == "supplier_credit" and inventory_preflight[1]:
-                raise Conflict(
-                    "STOCK_SUPPLIER_CREDIT_UNSUPPORTED",
-                    "Supplier credits for stocked bills require an inventory-cost "
-                    "adjustment workflow.",
+            if inventory_preflight[0] == "supplier_credit":
+                changed_item = _execute(
+                    "SELECT 1 FROM erp.purchase_bill_lines l JOIN erp.items item "
+                    "ON item.company_id=l.company_id AND item.id=l.item_id "
+                    "WHERE l.company_id=%s AND l.purchase_bill_id=%s AND item.item_kind<>'stock' "
+                    "AND EXISTS(SELECT 1 FROM erp.stock_movements m "
+                    "WHERE m.company_id=l.company_id AND m.source_type='purchase_bill' "
+                    "AND m.source_line_id=l.credit_of_bill_line_id "
+                    "AND m.quantity_delta>0) LIMIT 1",
+                    [scope.company_id, bill_id],
                 )
+                if changed_item is not None:
+                    raise Conflict(
+                        "SUPPLIER_RETURN_ITEM_CHANGED",
+                        "A received stock item was reclassified; review it before returning.",
+                    )
+            if inventory_preflight[0] == "supplier_credit" and inventory_preflight[1]:
+                if warehouse_id is None:
+                    raise Conflict(
+                        "SUPPLIER_RETURN_WAREHOUSE_REQUIRED",
+                        "Physical stocked supplier credits require a return warehouse.",
+                    )
+                assert_company_write(scope.company_id, "inventory", "inventory.post")
             if inventory_preflight[0] == "bill" and inventory_preflight[1]:
                 if warehouse_id is None:
                     raise Conflict(
@@ -1292,7 +1309,7 @@ def post_purchase_bill(
                     "STOCK_RECEIPT_WAREHOUSE_REQUIRED",
                     "A warehouse is required when posting a bill that receives stock.",
                 )
-            if bill[1] == "supplier_credit" and warehouse_id is not None:
+            if bill[1] == "supplier_credit" and warehouse_id is not None and not stock_accounts:
                 raise Conflict(
                     "CREDIT_RETURN_WORKFLOW_REQUIRED",
                     "Physical returns must use the typed inventory return workflow.",
@@ -1449,6 +1466,19 @@ def post_purchase_bill(
                     warehouse_id,
                     entry_id,
                     exchange_rate,
+                    functional_minor_units,
+                )
+            elif stock_accounts and is_credit:
+                from apps.inventory.supplier_returns import issue_supplier_return
+
+                assert warehouse_id is not None
+                issue_supplier_return(
+                    scope,
+                    bill_id,
+                    warehouse_id,
+                    entry_id,
+                    exchange_rate,
+                    str(company_currency[0]),
                     functional_minor_units,
                 )
             _insert_posting_journal_lines(scope.company_id, entry_id, journal_lines)

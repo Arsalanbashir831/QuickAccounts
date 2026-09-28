@@ -14,8 +14,8 @@ the source-document boundary from the authoritative architecture.
 | P5.5 | Sales posting and linked credit corrections | P5.4 | SAL-004–SAL-009, idempotency, concurrency, and reconciliation | Complete |
 | P5.6 | Purchase bill drafts, posting, and supplier credits | P5.2–P5.3 | PUR-001–PUR-004 and reconciliation | Complete |
 | P5.7 | Payments, withholding, AR/AP allocation, and reversal | P5.5–P5.6 | PAY-001–PAY-006, over-allocation race, and historical aging | Complete |
-| P5.8 | Warehouses, stock documents, reservations, and availability | P5.3 | INV-001–INV-008 and reservation concurrency | In progress: warehouse segregation and balance API verified; stock documents pending |
-| P5.9 | Inventory costing, cost allocation, and rebuildable projections | P5.8 | INV-009 and valuation-to-GL reconciliation | Not started |
+| P5.8 | Warehouses, stock documents, reservations, and availability | P5.3 | INV-001–INV-008 and reservation concurrency | Complete under approved conservative rules; migrations 0020–0022 applied locally |
+| P5.9 | Inventory costing, cost allocation, and rebuildable projections | P5.8 | INV-009 and valuation-to-GL reconciliation | Complete for approved scope-average/checkpoint-adopted workflows; current cost integrity and atomic verified rebuild implemented; 255 fresh PostgreSQL tests pass; migration 0030 applied locally; deferred extensions documented |
 | P5.10 | Versioned BOMs and production-order drafts | P5.3, P5.8 | MFG-001, MFG-002, and MFG-007 | Not started |
 | P5.11 | Material issues, outputs, completion, and cancellation | P5.9–P5.10 | MFG-003–MFG-006 and duplicate-command races | Not started |
 | P5.12 | Cross-domain release gate | P5.1–P5.11 | Full API, schema, RLS, concurrency, OpenAPI, lint, type, and migration gates | Not started |
@@ -46,3 +46,9 @@ Implementation pauses at the relevant boundary rather than inventing any of thes
 
 Unrestricted journal-line, stock-movement, and allocation insertion endpoints are never part of
 this roadmap. Those records are outputs of authorized source-document commands.
+
+P5.9 completion and verification evidence are documented in
+[`phase-5-p9-costing-contract.md`](phase-5-p9-costing-contract.md). FIFO, supplier-return
+cost variances, partial/tracked supplier returns and large durable report/maintenance
+jobs are not enabled by this completion. P5.10 is the next roadmap step; Phase 5's
+overall release gate remains P5.12.

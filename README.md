@@ -49,6 +49,8 @@ uv run celery -A config beat --loglevel=INFO
 - Shared stock/non-stock/service item catalog, UOM lookup, and item accounting profiles
 - Revisioned warehouse management and stock balances with sellable/quarantine/damaged/
   supplier-return segregation; non-sellable locations reject sales and reservations
+- Typed stock drafts, atomic receipts/transfers/approved losses, lot/serial validation,
+  revisioned reservations/release, deferred invoice shipments and projection reconciliation/rebuild
 - Sales-invoice draft aggregates with bounded line replacement, address snapshots, optimistic
   revisions, and deterministic effective-dated local tax calculation
 - Atomic, idempotent sales-invoice posting with balanced journal and optional untracked-stock
@@ -108,3 +110,21 @@ for endpoints, accounting effects and supported currency/stock boundaries.
 
 Phase 5 is split into bounded delivery and verification checkpoints in
 [`docs/phase-5-roadmap.md`](docs/phase-5-roadmap.md).
+
+P5.8 is verified and its migrations are applied locally. See the
+[inventory command contract](docs/phase-5-p8-inventory-contract.md) for approved
+policies and historical-availability boundaries. P5.9 is complete for the approved
+conservative scope-average/checkpoint-adopted workflows. It includes the pure scope-average
+calculator, immutable versioned cost-basis snapshots and explicit opening
+checkpoints with retained layer allocations for adopted typed stock issues,
+immediate sales, replacements and separately posted historical-cost return-stock
+dispositions, inline write-offs and matching-cost physical supplier credits.
+Tracked/partial supplier returns and supplier-return cost variances remain unsupported.
+Bounded valuation-to-GL reconciliation is available at
+`reports/inventory-valuation-reconciliation?as_of=YYYY-MM-DD`. Current layer/stock/
+reservation integrity is available at `inventory/cost-reconciliation`; atomic inventory
+rebuilds verify the repaired projection and adopted cost history without rewriting
+immutable facts. All 255 tests passed on fresh PostgreSQL and migration 0030 is applied
+locally. Supported scope, deferred extensions and verification evidence are documented
+in the [costing contract](docs/phase-5-p9-costing-contract.md). Next is P5.10; this is not
+completion of manufacturing or the overall Phase 5 production release gate.

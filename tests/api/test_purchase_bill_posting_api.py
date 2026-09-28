@@ -310,8 +310,10 @@ def test_post_denied_in_purchasing_read_only_mode_without_effects(
 @pytest.mark.api
 @pytest.mark.p1
 @pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("adopted", [False, True])
 def test_stock_bill_requires_inventory_and_posts_receipt_effects(
     accounting_context: dict[str, object],
+    adopted: bool,
 ) -> None:
     client = accounting_context["client"]
     assert isinstance(client, APIClient)
@@ -403,6 +405,18 @@ def test_stock_bill_requires_inventory_and_posts_receipt_effects(
         )
         assert cursor.fetchone() == (2, 100)
 
+    if adopted:
+        from apps.inventory.cost_checkpoints import create_cost_checkpoint
+
+        create_cost_checkpoint(
+            CompanyScope(
+                tenant_id=accounting_context["tenant"],
+                company_id=accounting_context["company"],
+                user_id=accounting_context["user"],
+            ),
+            {"warehouse_id": warehouse, "item_id": stock_item, "reason": "Reviewed purchase stock"},
+            key=str(uuid.uuid4()),
+        )
     credit = client.post(
         f"{bills_url}/{posted.json()['id']}/credit-notes",
         {
@@ -421,10 +435,41 @@ def test_stock_bill_requires_inventory_and_posts_receipt_effects(
         HTTP_IDEMPOTENCY_KEY="post-stock-credit-p56",
     )
     assert blocked_credit.status_code == 409, blocked_credit.json()
-    assert blocked_credit.json()["error"]["code"] == "STOCK_SUPPLIER_CREDIT_UNSUPPORTED"
+    assert blocked_credit.json()["error"]["code"] == "SUPPLIER_RETURN_WAREHOUSE_REQUIRED"
     credit_after = client.get(f"{bills_url}/{credit.json()['id']}")
     assert credit_after.status_code == 200, credit_after.json()
     assert credit_after.json()["status"] == "draft"
+    physical = client.post(
+        f"{bills_url}/{credit.json()['id']}/post",
+        post_payload,
+        format="json",
+        HTTP_IF_MATCH='"1"',
+        HTTP_IDEMPOTENCY_KEY="physical-supplier-return",
+    )
+    assert physical.status_code == 200, physical.json()
+    assert (
+        client.post(
+            f"{bills_url}/{credit.json()['id']}/post",
+            post_payload,
+            format="json",
+            HTTP_IF_MATCH='"1"',
+            HTTP_IDEMPOTENCY_KEY="physical-supplier-return",
+        ).json()
+        == physical.json()
+    )
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT quantity_delta,value_delta_company FROM erp.stock_movements "
+            "WHERE company_id=%s AND source_id=%s",
+            [accounting_context["company"], credit.json()["id"]],
+        )
+        assert cursor.fetchone() == (-2, -100)
+        cursor.execute(
+            "SELECT on_hand_quantity,value_company FROM erp.inventory_positions "
+            "WHERE company_id=%s AND warehouse_id=%s AND item_id=%s",
+            [accounting_context["company"], warehouse, stock_item],
+        )
+        assert cursor.fetchone() == (0, 0)
 
 
 @pytest.mark.concurrency

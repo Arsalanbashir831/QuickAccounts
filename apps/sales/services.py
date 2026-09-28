@@ -8,6 +8,10 @@ from typing import Any, cast
 
 from django.db import DatabaseError, IntegrityError, connection, transaction
 
+from apps.inventory.cost_basis import record_cost_basis
+from apps.inventory.cost_layers import locked_layers, record_layer_uses
+from apps.inventory.costing import CostingError, scope_average_issue
+from apps.inventory.layer_costing import allocate_average_issue
 from apps.sales.selectors import sales_invoice_detail
 from common.access.scopes import (
     CompanyScope,
@@ -1091,6 +1095,7 @@ def _stock_effects(
     journal_entry_id: uuid.UUID,
     stock_accounts: dict[uuid.UUID, tuple[uuid.UUID, uuid.UUID]],
     functional_currency: str,
+    functional_minor_units: int,
 ) -> list[dict[str, Any]]:
     warehouse = _execute(
         "SELECT 1 FROM erp.warehouses WHERE company_id=%s AND id=%s "
@@ -1142,19 +1147,58 @@ def _stock_effects(
             value = (quantity * unit_cost).quantize(
                 decimal.Decimal("0.000001"), rounding=decimal.ROUND_HALF_UP
             )
+            checkpoint = _execute(
+                "SELECT policy_id FROM erp.inventory_cost_checkpoints WHERE company_id=%s "
+                "AND warehouse_id=%s AND item_id=%s AND lot_id IS NULL",
+                [scope.company_id, warehouse_id, item_id],
+            )
+            basis = None
+            uses = None
+            if checkpoint is not None:
+                position = _execute(
+                    "SELECT on_hand_quantity,reserved_quantity,value_company "
+                    "FROM erp.inventory_positions WHERE company_id=%s AND warehouse_id=%s "
+                    "AND item_id=%s AND lot_id IS NULL FOR UPDATE",
+                    [scope.company_id, warehouse_id, item_id],
+                )
+                assert position is not None
+                try:
+                    calculated = scope_average_issue(
+                        on_hand=position[0],
+                        reserved=position[1],
+                        stock_value=position[2],
+                        quantity=quantity,
+                        currency_precision=functional_minor_units,
+                    )
+                    layers = locked_layers(scope.company_id, (warehouse_id, item_id, None))
+                    assert layers is not None
+                    uses = allocate_average_issue(layers, calculated)
+                except CostingError as exc:
+                    raise Conflict(exc.code, str(exc)) from exc
+                value = calculated.value_company
+                unit_cost = calculated.unit_cost_company
+                basis = {
+                    "basis_quantity": position[0],
+                    "basis_value_company": position[2],
+                    "reserved_quantity": position[1],
+                    "issue_quantity": quantity,
+                    "issue_value_company": value,
+                    "unit_cost_company": unit_cost,
+                }
             inventory_id, cogs_id = stock_accounts[item_id]
             key = (inventory_id, cogs_id)
             cost_by_accounts[key] = cost_by_accounts.get(key, decimal.Decimal(0)) + value
             cursor.execute(
                 """
                 INSERT INTO erp.stock_movements(
-                    company_id,event_key,occurred_at,warehouse_id,item_id,movement_kind,
+                    id,company_id,event_key,occurred_at,warehouse_id,item_id,movement_kind,
                     quantity_delta,unit_cost_company,value_delta_company,source_type,
                     source_id,source_line_id,journal_entry_id
-                ) VALUES (%s,%s,clock_timestamp(),%s,%s,'issue',%s,%s,%s,
+                ) VALUES (%s,%s,%s,clock_timestamp(),%s,%s,'issue',%s,%s,%s,
                           'sales_invoice',%s,%s,%s)
                 """,
                 [
+                    movement_id := uuid.uuid4(),
                     scope.company_id,
                     f"sales_invoice:{invoice_id}:line:{line_id}",
                     warehouse_id,
@@ -1167,6 +1211,17 @@ def _stock_effects(
                     journal_entry_id,
                 ],
             )
+            if basis is not None:
+                assert checkpoint is not None and uses is not None
+                record_cost_basis(
+                    scope,
+                    movement_id,
+                    checkpoint[0],
+                    basis,
+                    currency_code=functional_currency,
+                    currency_precision=functional_minor_units,
+                )
+                record_layer_uses(scope.company_id, movement_id, uses)
     result: list[dict[str, Any]] = []
     for (inventory_id, cogs_id), amount in cost_by_accounts.items():
         result.append(
@@ -1226,6 +1281,11 @@ def post_sales_invoice(
                 return receipt.replay_body, receipt.replay_status or 200
             assert_company_write(scope.company_id, "sales", "sales.invoice.post")
             warehouse_id = command.get("warehouse_id")
+            deferred_stock = command.get("stock_fulfillment", "immediate") == "deferred"
+            if deferred_stock and warehouse_id is not None:
+                raise Conflict(
+                    "STOCK_FULFILLMENT_INVALID", "Deferred fulfillment cannot issue stock now."
+                )
             inventory_preflight = _execute(
                 """
                 SELECT i.document_kind, EXISTS (
@@ -1243,13 +1303,19 @@ def post_sales_invoice(
             )
             if inventory_preflight is None:
                 raise ScopeNotFound()
+            if deferred_stock and (
+                inventory_preflight[0] != "invoice" or not inventory_preflight[1]
+            ):
+                raise Conflict(
+                    "STOCK_FULFILLMENT_INVALID", "Only stock invoices support deferred shipment."
+                )
             if inventory_preflight[0] == "credit_note" and warehouse_id is not None:
                 raise Conflict(
                     "CREDIT_RETURN_WORKFLOW_REQUIRED",
                     "Physical returns must use the typed inventory return workflow.",
                 )
             if inventory_preflight[0] == "invoice" and inventory_preflight[1]:
-                if warehouse_id is None:
+                if warehouse_id is None and not deferred_stock:
                     raise Conflict(
                         "STOCK_FULFILLMENT_REQUIRED",
                         "A warehouse is required when posting an invoice that consumes stock.",
@@ -1334,7 +1400,12 @@ def post_sales_invoice(
                 require_stock=warehouse_id is not None,
                 document_kind=invoice[1],
             )
-            if stock_accounts and invoice[1] == "invoice" and warehouse_id is None:
+            if (
+                stock_accounts
+                and invoice[1] == "invoice"
+                and warehouse_id is None
+                and not deferred_stock
+            ):
                 raise Conflict(
                     "STOCK_FULFILLMENT_REQUIRED",
                     "A warehouse is required when posting an invoice that consumes stock.",
@@ -1471,7 +1542,7 @@ def post_sales_invoice(
                     functional_amount=counter_functional_total,
                 ),
             )
-            if stock_accounts and not is_credit:
+            if stock_accounts and not is_credit and not deferred_stock:
                 assert warehouse_id is not None
                 journal_lines.extend(
                     _stock_effects(
@@ -1481,6 +1552,7 @@ def post_sales_invoice(
                         entry_id,
                         stock_accounts,
                         functional_currency,
+                        functional_minor_units,
                     )
                 )
             _insert_posting_journal_lines(scope.company_id, entry_id, journal_lines)
@@ -1489,11 +1561,18 @@ def post_sales_invoice(
             _execute(
                 """
                 UPDATE erp.sales_invoices
-                SET invoice_no=%s,journal_entry_id=%s,status='posted',posted_at=clock_timestamp()
+                SET invoice_no=%s,journal_entry_id=%s,stock_fulfillment=%s,
+                    status='posted',posted_at=clock_timestamp()
                 WHERE company_id=%s AND id=%s
                 RETURNING id
                 """,
-                [final_invoice_no, entry_id, scope.company_id, invoice_id],
+                [
+                    final_invoice_no,
+                    entry_id,
+                    "deferred" if deferred_stock else "immediate",
+                    scope.company_id,
+                    invoice_id,
+                ],
             )
             body = sales_invoice_detail(scope.company_id, invoice_id)
             assert body is not None

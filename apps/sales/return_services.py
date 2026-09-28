@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from django.db import transaction
 
+from apps.inventory.return_costing import prepare_return_costing, record_return_costing
 from apps.payments.services import (
     _account,
     _claim,
@@ -496,6 +497,29 @@ def post_return(
             "ORDER BY sales_invoice_line_id FOR UPDATE",
             [scope.company_id, return_id],
         )
+        if document["kind"] == "return":
+            _run(
+                "SELECT pg_advisory_xact_lock_shared(hashtextextended(%s,0))",
+                [f"inventory-rebuild:{scope.company_id}"],
+            )
+            stock_scopes = _rows(
+                "SELECT DISTINCT l.warehouse_id,s.item_id FROM erp.sales_return_lines l "
+                "JOIN erp.sales_invoice_lines s ON s.company_id=l.company_id "
+                "AND s.id=l.sales_invoice_line_id WHERE l.company_id=%s "
+                "AND l.sales_return_id=%s ORDER BY l.warehouse_id,s.item_id",
+                [scope.company_id, return_id],
+            )
+            for stock_scope in stock_scopes:
+                positions = _rows(
+                    "SELECT id FROM erp.inventory_positions WHERE company_id=%s "
+                    "AND warehouse_id=%s AND item_id=%s AND lot_id IS NULL FOR UPDATE",
+                    [scope.company_id, stock_scope["warehouse_id"], stock_scope["item_id"]],
+                )
+                if not positions:
+                    _one(
+                        "SELECT id FROM erp.items WHERE company_id=%s AND id=%s FOR UPDATE",
+                        [scope.company_id, stock_scope["item_id"]],
+                    )
         journal_lines: list[tuple[uuid.UUID, D, bool, dict[str, Any], int]] = []
         total = D(0)
         for line in lines:
@@ -730,13 +754,39 @@ def post_return(
                     _account(
                         scope.company_id, line["loss_account_id"], {"expense", "cost_of_sales"}
                     )
+                    position = _one(
+                        "SELECT * FROM erp.inventory_positions WHERE company_id=%s "
+                        "AND warehouse_id=%s AND item_id=%s AND lot_id IS NULL FOR UPDATE",
+                        [scope.company_id, line["warehouse_id"], original["item_id"]],
+                    )
+                    unit_cost = _money(cost / line["quantity"], 6)
+                    uses = prepare_return_costing(
+                        scope.company_id,
+                        line["warehouse_id"],
+                        original["item_id"],
+                        line["id"],
+                        position,
+                        basis_quantity=line["quantity"],
+                        basis_value=cost,
+                        quantity=line["quantity"],
+                        value=cost,
+                        unit_cost=unit_cost,
+                    )
+                    # The inline basis guard reads this immutable-on-posting line fact.
+                    _run(
+                        "UPDATE erp.sales_return_lines SET historical_cost=%s "
+                        "WHERE company_id=%s AND id=%s",
+                        [cost, scope.company_id, line["id"]],
+                    )
+                    movement = uuid.uuid4()
                     _run(
                         "INSERT INTO "
-                        "erp.stock_movements(company_id,event_key,occurred_at,warehouse_id,item"
+                        "erp.stock_movements(id,company_id,event_key,occurred_at,warehouse_id,item"
                         "_id,movement_kind,quantity_delta,unit_cost_company,value_delta_company"
-                        ",source_type,source_id,source_line_id,journal_entry_id) VALUES (%s,%s,"
+                        ",source_type,source_id,source_line_id,journal_entry_id) VALUES (%s,%s,%s,"
                         "%s,%s,%s,'adjustment',%s,%s,%s,'sales_return',%s,%s,%s)",
                         [
+                            movement,
                             scope.company_id,
                             f"return:{return_id}:{line['id']}:writeoff",
                             document["return_date"],
@@ -750,6 +800,22 @@ def post_return(
                             entry,
                         ],
                     )
+                    if uses is not None:
+                        record_return_costing(
+                            scope.company_id,
+                            movement,
+                            None,
+                            line["id"],
+                            position,
+                            uses,
+                            basis_quantity=line["quantity"],
+                            basis_value=cost,
+                            quantity=line["quantity"],
+                            value=cost,
+                            unit_cost=unit_cost,
+                            currency=source["functional_currency"],
+                            precision=source["functional_precision"],
+                        )
                     journal_lines.extend(
                         [
                             (

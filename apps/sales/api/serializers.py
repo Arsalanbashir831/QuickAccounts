@@ -97,6 +97,7 @@ class SalesInvoicePatchSerializer(serializers.Serializer):
 
 
 class SalesInvoicePostSerializer(serializers.Serializer):
+    stock_fulfillment = serializers.ChoiceField(choices=["immediate", "deferred"], required=False)
     fiscal_period_id = serializers.UUIDField()
     journal_id = serializers.UUIDField()
     warehouse_id = serializers.UUIDField(required=False, allow_null=True)

@@ -51,6 +51,7 @@ def sales_invoice_detail(company_id: uuid.UUID, invoice_id: uuid.UUID) -> dict[s
                    i.due_date, i.currency_code, i.exchange_rate, i.status,
                    i.row_version, i.calculated_at, i.journal_entry_id,
                    i.credit_of_invoice_id, i.posted_at, i.created_at, i.updated_at,
+                   i.stock_fulfillment,
                    coalesce(t.net_total, 0)::numeric(20,6) AS net_total,
                    coalesce(t.tax_total, 0)::numeric(20,6) AS tax_total,
                    coalesce(t.gross_total, 0)::numeric(20,6) AS gross_total

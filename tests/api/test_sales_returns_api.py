@@ -244,12 +244,17 @@ def _inspect_stock(context: dict, setup: dict, document: dict) -> dict:
 
 
 @pytest.mark.parametrize("price,difference", [("25", "-55"), ("50", "0"), ("75", "55")])
+@pytest.mark.parametrize("adopted", [False, True])
 def test_atomic_replacement_price_difference_and_stock(
-    accounting_context: dict, price: str, difference: str
+    accounting_context: dict, price: str, difference: str, adopted: bool
 ) -> None:
     from tests.api.test_sales_invoice_drafts_api import _payload
 
     setup = _stock_setup(accounting_context)
+    if adopted:
+        from tests.api.test_inventory_cost_layers_api import _adopt
+
+        _adopt(accounting_context, setup)
     original_receipt = _paid(accounting_context, setup)
     document = _inspect_stock(
         accounting_context, setup, _draft(accounting_context, setup, physical=True, quantity="2")
@@ -324,6 +329,22 @@ def test_atomic_replacement_price_difference_and_stock(
             [accounting_context["company"], setup["posting"]["receivable"]],
         )
         assert cursor.fetchone()[0] == 0
+    if adopted:
+        from apps.inventory.cost_reconciliation import cost_reconciliation
+        from apps.inventory.stock_commands import rebuild_positions
+
+        reconciled = cost_reconciliation(accounting_context["company"])
+        assert reconciled["matches"] is True
+        rebuilt = rebuild_positions(
+            CompanyScope(
+                accounting_context["tenant"],
+                accounting_context["company"],
+                accounting_context["user"],
+            ),
+            key="replacement-cost-rebuild",
+        )
+        assert rebuilt["cost_history_verified"] is True
+        assert cost_reconciliation(accounting_context["company"]) == reconciled
 
 
 def test_repeated_partial_returns_and_dead_stock_report(accounting_context: dict) -> None:
@@ -387,8 +408,9 @@ def test_repeated_partial_returns_and_dead_stock_report(accounting_context: dict
         ("write_off", "damaged"),
     ],
 )
+@pytest.mark.parametrize("adopted", [False, True])
 def test_physical_inspection_disposition_and_historical_cost(
-    accounting_context: dict, disposition: str, category: str
+    accounting_context: dict, disposition: str, category: str, adopted: bool
 ) -> None:
     setup = _stock_setup(accounting_context)
     document = _draft(accounting_context, setup, physical=True)
@@ -439,6 +461,10 @@ def test_physical_inspection_disposition_and_historical_cost(
     )
     assert D(balances["on_hand_quantity"]) == (0 if disposition == "write_off" else 1)
     assert D(balances["value_company"]) == (0 if disposition == "write_off" else 100)
+    if adopted:
+        from tests.api.test_inventory_cost_layers_api import _adopt
+
+        _adopt(accounting_context, setup | {"warehouse": uuid.UUID(dest["id"])})
     assert D(balances["available_quantity"]) == (1 if disposition == "restock" else 0)
     with connection.cursor() as cursor:
         cursor.execute(

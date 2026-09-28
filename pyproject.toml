@@ -64,7 +64,7 @@ module = ["apps.*.api.serializers"]
 disable_error_code = ["type-arg", "arg-type", "call-arg"]
 
 [[tool.mypy.overrides]]
-module = ["apps.sales.api.returns"]
+module = ["apps.sales.api.returns", "apps.inventory.api.stock"]
 disable_error_code = ["type-arg", "call-arg"]
 
 [[tool.mypy.overrides]]

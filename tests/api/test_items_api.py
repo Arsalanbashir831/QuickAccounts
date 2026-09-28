@@ -140,7 +140,15 @@ def test_item_catalog_is_revisioned_and_independent_from_inventory_module(
 
     uoms = client.get(f"{_company_root(accounting_context)}/reference/uoms")
     assert uoms.status_code == 200, uoms.json()
-    assert any(row["id"] == str(uom_id) for row in uoms.json()["results"])
+    uom_rows = uoms.json()["results"]
+    while not any(row["id"] == str(uom_id) for row in uom_rows) and uoms.json()["next_cursor"]:
+        uoms = client.get(
+            f"{_company_root(accounting_context)}/reference/uoms",
+            {"cursor": uoms.json()["next_cursor"]},
+        )
+        assert uoms.status_code == 200, uoms.json()
+        uom_rows.extend(uoms.json()["results"])
+    assert any(row["id"] == str(uom_id) for row in uom_rows)
 
     with connection.cursor() as cursor:
         cursor.execute(

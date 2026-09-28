@@ -4,6 +4,7 @@ from typing import Any, cast
 
 from django.db import transaction
 
+from apps.inventory.return_costing import prepare_return_costing, record_return_costing
 from apps.payments.services import (
     _account,
     _claim,
@@ -12,6 +13,7 @@ from apps.payments.services import (
     _line,
     _money,
     _posting_period,
+    _rows,
     _run,
 )
 from apps.sales.return_services import _effect, _finish, _journal, _locked, _one
@@ -63,6 +65,27 @@ def dispose_return_stock(
                     "Sellable stock may have been resold; disposition requires segregated "
                     "non-sellable stock.",
                 )
+        _run(
+            "SELECT pg_advisory_xact_lock_shared(hashtextextended(%s,0))",
+            [f"inventory-rebuild:{scope.company_id}"],
+        )
+        position = None
+        for warehouse_id in warehouses:
+            # Match stock-command ordering: absent destination scopes lock the item.
+            rows = _rows(
+                "SELECT * FROM erp.inventory_positions WHERE company_id=%s "
+                "AND warehouse_id=%s AND item_id=%s AND lot_id IS NULL FOR UPDATE",
+                [scope.company_id, warehouse_id, line["item_id"]],
+            )
+            if not rows:
+                _one(
+                    "SELECT id FROM erp.items WHERE company_id=%s AND id=%s FOR UPDATE",
+                    [scope.company_id, line["item_id"]],
+                )
+            elif warehouse_id == original_from:
+                position = rows[0]
+        if position is None:
+            raise Conflict("RETURN_STOCK_UNAVAILABLE", "Return stock scope is unavailable.")
         balances = _one(
             "SELECT coalesce(sum(CASE WHEN to_warehouse_id=%s THEN quantity WHEN "
             "from_warehouse_id=%s THEN -quantity ELSE 0 END),0) "
@@ -102,6 +125,21 @@ def dispose_return_stock(
                 "RETURN_COST_ROUNDING_POLICY_REQUIRED",
                 "Fractional costs need a reviewed GL rounding policy.",
             )
+        if requested > position["on_hand_quantity"] - position["reserved_quantity"]:
+            raise Conflict("RETURN_STOCK_UNAVAILABLE", "Available returned stock is insufficient.")
+        unit_cost = _money(cost / requested, 6)
+        uses = prepare_return_costing(
+            scope.company_id,
+            original_from,
+            line["item_id"],
+            line["id"],
+            position,
+            basis_quantity=quantity,
+            basis_value=value,
+            quantity=requested,
+            value=cost,
+            unit_cost=unit_cost,
+        )
         action_id = uuid.uuid4()
         entry = None
         stock_facts = source | {
@@ -165,16 +203,19 @@ def dispose_return_stock(
                 entry,
             ],
         )
+        cost_basis = None
         for warehouse_id, sign in [(original_from, -1)] + (
             [(destination, 1)] if destination else []
         ):
+            movement = uuid.uuid4()
             _run(
                 "INSERT INTO "
-                "erp.stock_movements(company_id,event_key,occurred_at,warehouse_id,item_id,m"
+                "erp.stock_movements(id,company_id,event_key,occurred_at,warehouse_id,item_id,m"
                 "ovement_kind,quantity_delta,unit_cost_company,value_delta_company,source_ty"
                 "pe,source_id,source_line_id,journal_entry_id) VALUES "
-                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,'return_stock_action',%s,%s,%s)",
+                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'return_stock_action',%s,%s,%s)",
                 [
+                    movement,
                     scope.company_id,
                     f"return-stock:{action_id}:{sign}",
                     data["action_date"],
@@ -182,13 +223,29 @@ def dispose_return_stock(
                     line["item_id"],
                     "transfer" if destination else "adjustment",
                     requested * sign,
-                    _money(cost / requested, 6),
+                    unit_cost,
                     cost * sign,
                     action_id,
                     line["id"],
                     entry,
                 ],
             )
+            if sign == -1 and uses is not None:
+                cost_basis = record_return_costing(
+                    scope.company_id,
+                    movement,
+                    action_id,
+                    line["id"],
+                    position,
+                    uses,
+                    basis_quantity=quantity,
+                    basis_value=value,
+                    quantity=requested,
+                    value=cost,
+                    unit_cost=unit_cost,
+                    currency=source["functional_currency"],
+                    precision=source["functional_precision"],
+                )
         _effect(
             scope,
             action_id,
@@ -198,6 +255,16 @@ def dispose_return_stock(
         result = _json(
             _one(
                 "SELECT * FROM erp.sales_return_stock_actions WHERE company_id=%s AND id=%s",
+                [scope.company_id, action_id],
+            )
+        )
+        result["cost_basis"] = _json(cost_basis)
+        result["cost_allocations"] = _json(
+            _rows(
+                "SELECT a.* FROM erp.inventory_cost_allocations a JOIN erp.stock_movements m "
+                "ON m.company_id=a.company_id AND m.id=a.issue_movement_id "
+                "WHERE m.company_id=%s AND m.source_type='return_stock_action' AND m.source_id=%s "
+                "ORDER BY a.cost_layer_id",
                 [scope.company_id, action_id],
             )
         )
