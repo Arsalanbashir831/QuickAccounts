@@ -29,6 +29,19 @@ class WarehouseSerializer(serializers.Serializer[dict[str, Any]]):
     name = serializers.CharField(max_length=255, validators=[_non_blank])
     address_text = serializers.CharField(max_length=2000, allow_null=True, default=None)
     stock_category = serializers.ChoiceField(choices=CATEGORIES, default="sellable")
+    operational_role = serializers.ChoiceField(
+        choices=[
+            "sellable",
+            "inspection",
+            "repair",
+            "dead_stock",
+            "clearance",
+            "supplier_return",
+            "scrap",
+        ],
+        allow_null=True,
+        default=None,
+    )
     is_active = serializers.BooleanField(default=True)
 
     def validate(self, attrs: dict[str, object]) -> dict[str, object]:

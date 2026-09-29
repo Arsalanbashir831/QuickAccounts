@@ -18,7 +18,9 @@ WITH movement_input AS MATERIALIZED (
  AND inventory_account_id IS NOT NULL ORDER BY item_id LIMIT 10001
 ), mapped AS MATERIALIZED (
  SELECT m.*,coalesce(dl.inventory_account_id_snapshot,sl.inventory_account_id_snapshot,
- pl.inventory_account_id_snapshot,rsl.inventory_account_id_snapshot) inventory_account_id
+ pl.inventory_account_id_snapshot,rsl.inventory_account_id_snapshot,
+ pi.inventory_account_id_snapshot,porder.output_inventory_account_id_snapshot,
+ pri.inventory_account_id_snapshot) inventory_account_id
  FROM movement_input m
  LEFT JOIN erp.inventory_document_lines dl ON dl.company_id=m.company_id
  AND dl.id=m.inventory_document_line_id
@@ -30,6 +32,16 @@ WITH movement_input AS MATERIALIZED (
  AND m.source_type IN ('sales_return','return_stock_action')
  LEFT JOIN erp.sales_invoice_lines rsl ON rsl.company_id=rl.company_id
  AND rsl.id=rl.sales_invoice_line_id
+ LEFT JOIN erp.production_material_issues pi ON pi.company_id=m.company_id
+ AND pi.stock_movement_id=m.id AND m.source_type='production_execution'
+ LEFT JOIN erp.production_outputs po ON po.company_id=m.company_id
+ AND po.stock_movement_id=m.id AND m.source_type='production_execution'
+ LEFT JOIN erp.production_orders porder ON porder.company_id=po.company_id
+ AND porder.id=po.production_order_id
+ LEFT JOIN erp.production_material_returns pr ON pr.company_id=m.company_id
+ AND pr.stock_movement_id=m.id AND m.source_type='production_execution'
+ LEFT JOIN erp.production_material_issues pri ON pri.company_id=pr.company_id
+ AND pri.id=pr.material_issue_id
 ), account_ids AS (
  SELECT inventory_account_id id FROM profile_input UNION
  SELECT inventory_account_id FROM mapped WHERE inventory_account_id IS NOT NULL

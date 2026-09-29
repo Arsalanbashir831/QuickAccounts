@@ -561,14 +561,10 @@ def _audit_and_outbox(
 ) -> None:
     _execute(
         """
-        INSERT INTO erp.company_audit_events(
-            tenant_id,company_id,actor_user_id,action,object_type,object_id,new_data,request_id
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
+        SELECT erp.append_accounting_audit(%s,%s,%s,%s,%s::jsonb,%s)
         """,
         [
-            scope.tenant_id,
             scope.company_id,
-            scope.user_id,
             action,
             object_type,
             str(entry_id),

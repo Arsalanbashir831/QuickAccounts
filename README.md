@@ -83,11 +83,10 @@ PgBouncer transaction pooling compatibility.
 
 ## Current boundary
 
-Accounting Phase 3 and access/licensing Phase 4 are implemented. Phase 5 is underway: partner
-master data, the shared item/service catalog, item accounting profiles, deterministic
-sales-invoice calculation, atomic posting, linked credit corrections, purchase bill drafts,
-atomic posting, and linked supplier credits are complete. P5.7 adds payment settlement,
-withholding, allocation concurrency guards, compensating reversal, and historical aging.
+Accounting Phase 3 and access/licensing Phase 4 are implemented. The approved
+Phase 5 backend scope now includes partner and item masters, sales and purchase
+posting, linked corrections, payment settlement and aging, inventory costing,
+manufacturing execution, and the expanded retail/wholesale return flow.
 Phase 4 includes effective
 capabilities, revision-checked and idempotent module policy changes, dependency and entitlement
 validation, audit/outbox persistence, license summaries, activation quota enforcement,
@@ -100,31 +99,28 @@ boundaries across month-end and DST.
 
 Verified payment-provider fulfillment and webhook processing remain Phase 6 integration work.
 Signed offline grants remain disabled until a signing service and its subject/audience/signature
-verification contract are selected. Inventory policy/costing, country tax packs, and
-unsupported returns/refunds remain explicit product decisions and are not guessed.
+verification contract are selected. Country tax packs and the explicitly blocked
+inventory/return variants remain product decisions and are not guessed.
 
 Linked customer returns, inspection, historical-cost stock disposition, confirmed
 cash refunds and replacement invoice settlement are implemented under the approved
 conservative rules. See [the return flow contract](docs/return-stock-implementation-plan.md)
-for endpoints, accounting effects and supported currency/stock boundaries.
+for endpoints, accounting boundaries and expanded diagram-alignment tasks.
+Returned-stock repair jobs, mandatory QC release, future-invoice credit
+applications, independent custody intake, dead-stock cases, supplier claims,
+physical returns, sales orders and explicit delivery confirmation are implemented
+within the conservative boundaries in the flow contract.
 
-Phase 5 is split into bounded delivery and verification checkpoints in
-[`docs/phase-5-roadmap.md`](docs/phase-5-roadmap.md).
+The current [Phase 5 backend contract](docs/phase-5-completion.md) summarizes
+the completed workflows and the separate production-release gates.
 
-P5.8 is verified and its migrations are applied locally. See the
-[inventory command contract](docs/phase-5-p8-inventory-contract.md) for approved
-policies and historical-availability boundaries. P5.9 is complete for the approved
-conservative scope-average/checkpoint-adopted workflows. It includes the pure scope-average
-calculator, immutable versioned cost-basis snapshots and explicit opening
-checkpoints with retained layer allocations for adopted typed stock issues,
-immediate sales, replacements and separately posted historical-cost return-stock
-dispositions, inline write-offs and matching-cost physical supplier credits.
-Tracked/partial supplier returns and supplier-return cost variances remain unsupported.
-Bounded valuation-to-GL reconciliation is available at
-`reports/inventory-valuation-reconciliation?as_of=YYYY-MM-DD`. Current layer/stock/
-reservation integrity is available at `inventory/cost-reconciliation`; atomic inventory
-rebuilds verify the repaired projection and adopted cost history without rewriting
-immutable facts. All 255 tests passed on fresh PostgreSQL and migration 0030 is applied
-locally. Supported scope, deferred extensions and verification evidence are documented
-in the [costing contract](docs/phase-5-p9-costing-contract.md). Next is P5.10; this is not
-completion of manufacturing or the overall Phase 5 production release gate.
+P5.8–P5.9 inventory commands and historical costing, P5.10 BOM and production
+drafts, P5.11 material-only production execution, and P5.12 cross-domain
+verification are implemented. Bounded valuation-to-GL reconciliation is available
+at `reports/inventory-valuation-reconciliation?as_of=YYYY-MM-DD`; current
+layer/stock/reservation integrity is available at `inventory/cost-reconciliation`.
+Partial untracked supplier returns and provable one-hop transfers are supported;
+tracked returns and supplier-return cost variances remain blocked. Labor/overhead
+and automatic scrap/variance posting are not part of the approved Phase 5 policy.
+See the [Phase 5 backend contract](docs/phase-5-completion.md) for the current
+scope and release boundary.

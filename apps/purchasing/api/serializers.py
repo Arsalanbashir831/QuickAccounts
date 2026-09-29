@@ -105,8 +105,25 @@ class SupplierCreditCreateSerializer(serializers.Serializer):
     source_line_ids = serializers.ListField(
         child=serializers.UUIDField(), min_length=1, max_length=50
     )
+    partial_quantities = serializers.ListField(
+        child=serializers.DecimalField(
+            max_digits=20, decimal_places=6, min_value=Decimal("0.000001")
+        ),
+        min_length=1,
+        max_length=50,
+        required=False,
+    )
 
     def validate_source_line_ids(self, value: list[object]) -> list[object]:
         if len(value) != len(set(value)):
             raise serializers.ValidationError("Each source line may be credited only once.")
         return value
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        if "partial_quantities" in attrs and len(attrs["partial_quantities"]) != len(
+            attrs["source_line_ids"]
+        ):
+            raise serializers.ValidationError(
+                "partial_quantities must match source_line_ids order."
+            )
+        return attrs

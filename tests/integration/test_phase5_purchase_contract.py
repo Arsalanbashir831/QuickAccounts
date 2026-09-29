@@ -44,10 +44,20 @@ def test_purchase_bill_schema_contract() -> None:
         cursor.execute(
             """
             SELECT indexname FROM pg_indexes
-            WHERE schemaname='erp' AND indexname='uq_purchase_bill_line_credited_once'
+            WHERE schemaname='erp' AND indexname='ix_purchase_bill_line_credit_source'
             """
         )
-        assert cursor.fetchone() == ("uq_purchase_bill_line_credited_once",)
+        assert cursor.fetchone() == ("ix_purchase_bill_line_credit_source",)
+        cursor.execute(
+            "SELECT 1 FROM pg_trigger WHERE tgrelid='erp.purchase_bill_lines'::regclass "
+            "AND tgname='trg_partial_supplier_credit_line' AND NOT tgisinternal"
+        )
+        assert cursor.fetchone() == (1,)
+        cursor.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema='erp' "
+            "AND table_name='purchase_bill_lines' AND column_name='credit_quantity_offset'"
+        )
+        assert cursor.fetchone() == (1,)
 
 
 @pytest.mark.integration

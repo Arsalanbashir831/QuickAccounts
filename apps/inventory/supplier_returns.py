@@ -15,6 +15,7 @@ from common.api.errors import Conflict
 def issue_supplier_return(
     scope: CompanyScope,
     credit_id: uuid.UUID,
+    credit_date: object,
     warehouse_id: uuid.UUID,
     journal_id: uuid.UUID,
     exchange_rate: Decimal,
@@ -62,15 +63,76 @@ def issue_supplier_return(
         value = _money((line["net_amount"] + line["nonrecoverable_tax"]) * exchange_rate, precision)
         if (
             len(origins) != 1
-            or origins[0]["warehouse_id"] != warehouse_id
             or origins[0]["item_id"] != line["item_id"]
             or origins[0]["lot_id"] is not None
-            or origins[0]["quantity_delta"] != line["quantity"]
-            or origins[0]["value_delta_company"] != value
+            or origins[0]["quantity_delta"] < line["credit_quantity_offset"] + line["quantity"]
+            or _money(
+                origins[0]["value_delta_company"]
+                * (line["credit_quantity_offset"] + line["quantity"])
+                / origins[0]["quantity_delta"],
+                precision,
+            )
+            - _money(
+                origins[0]["value_delta_company"]
+                * line["credit_quantity_offset"]
+                / origins[0]["quantity_delta"],
+                precision,
+            )
+            != value
         ):
             raise Conflict(
                 "SUPPLIER_RETURN_ORIGIN_REQUIRED",
                 "Return quantity, cost and warehouse must match the linked bill receipt.",
+            )
+        if origins[0]["warehouse_id"] != warehouse_id and not _rows(
+            "SELECT 1 FROM erp.stock_movements inbound JOIN erp.stock_movements outbound "
+            "ON outbound.company_id=inbound.company_id AND outbound.inventory_document_line_id="
+            "inbound.inventory_document_line_id "
+            "AND outbound.quantity_delta=-inbound.quantity_delta "
+            "AND outbound.value_delta_company=-inbound.value_delta_company "
+            "JOIN erp.inventory_documents d "
+            "ON d.company_id=inbound.company_id AND d.id=inbound.source_id "
+            "WHERE inbound.company_id=%s AND inbound.source_type='inventory_document' "
+            "AND inbound.movement_kind='transfer' AND d.document_kind='transfer' "
+            "AND d.status='posted' "
+            "AND inbound.warehouse_id=%s AND inbound.item_id=%s AND inbound.lot_id IS NULL "
+            "AND inbound.quantity_delta=%s AND inbound.value_delta_company=%s "
+            "AND outbound.warehouse_id=%s AND outbound.item_id=%s AND outbound.lot_id IS NULL "
+            "AND outbound.quantity_delta=-%s AND outbound.value_delta_company=-%s "
+            "AND NOT EXISTS(SELECT 1 FROM erp.stock_movements other WHERE other.company_id=%s "
+            "AND other.warehouse_id=%s AND other.item_id=%s AND other.lot_id IS NULL "
+            "AND other.quantity_delta>0 AND other.id<>%s) "
+            "AND NOT EXISTS(SELECT 1 FROM erp.stock_movements other WHERE other.company_id=%s "
+            "AND other.warehouse_id=%s AND other.item_id=%s AND other.lot_id IS NULL "
+            "AND other.quantity_delta>0 AND other.id<>inbound.id) "
+            "AND NOT EXISTS(SELECT 1 FROM erp.stock_movements other WHERE other.company_id=%s "
+            "AND other.warehouse_id=%s AND other.item_id=%s AND other.lot_id IS NULL "
+            "AND other.quantity_delta<0)",
+            [
+                scope.company_id,
+                warehouse_id,
+                line["item_id"],
+                line["quantity"],
+                value,
+                origins[0]["warehouse_id"],
+                line["item_id"],
+                line["quantity"],
+                value,
+                scope.company_id,
+                origins[0]["warehouse_id"],
+                line["item_id"],
+                origins[0]["id"],
+                scope.company_id,
+                warehouse_id,
+                line["item_id"],
+                scope.company_id,
+                warehouse_id,
+                line["item_id"],
+            ],
+        ):
+            raise Conflict(
+                "SUPPLIER_RETURN_TRANSFER_PROVENANCE_REQUIRED",
+                "Return warehouse needs one provable transfer of the original stock.",
             )
         position = _rows(
             "SELECT * FROM erp.inventory_positions WHERE company_id=%s "
@@ -99,11 +161,12 @@ def issue_supplier_return(
             "INSERT INTO erp.stock_movements(id,company_id,event_key,occurred_at,warehouse_id,"
             "item_id,movement_kind,quantity_delta,unit_cost_company,value_delta_company,"
             "source_type,source_id,source_line_id,journal_entry_id) VALUES "
-            "(%s,%s,%s,clock_timestamp(),%s,%s,'issue',%s,%s,%s,'purchase_bill',%s,%s,%s)",
+            "(%s,%s,%s,%s,%s,%s,'issue',%s,%s,%s,'purchase_bill',%s,%s,%s)",
             [
                 movement,
                 scope.company_id,
                 f"supplier-return:{credit_id}:{line['id']}",
+                credit_date,
                 warehouse_id,
                 line["item_id"],
                 -line["quantity"],

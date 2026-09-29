@@ -203,7 +203,7 @@ def test_offsetting_manual_journals_do_not_create_false_match(accounting_context
     assert report["matches"] is False
 
 
-def test_valuation_flags_stock_and_journal_effective_date_difference(
+def test_purchase_receipt_and_journal_share_source_effective_date(
     accounting_context: dict,
 ) -> None:
     setup = _setup(accounting_context)
@@ -214,13 +214,11 @@ def test_valuation_flags_stock_and_journal_effective_date_difference(
             [accounting_context["company"]],
         )
         journal_date = cursor.fetchone()[0]
-    if journal_date >= dt.datetime.now(dt.UTC).date():
-        pytest.skip("Fixture must be backdated relative to stock posting.")
     report = _report(accounting_context, setup, date=journal_date.isoformat()).json()
-    assert D(report["ledger_value_company"]) == 0
+    assert D(report["ledger_value_company"]) == 100
     assert D(report["gl_value_company"]) == 100
-    assert report["matches"] is False
-    assert report["journal_difference_count"] == 1
+    assert report["matches"] is True
+    assert report["journal_difference_count"] == 0
 
 
 def test_large_inventory_history_never_returns_partial_reconciliation(

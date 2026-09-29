@@ -225,8 +225,9 @@ def save_document(
     document_id: uuid.UUID | None = None,
     revision: int | None = None,
     request_id: str | None = None,
+    _nested: bool = False,
 ) -> dict[str, Any]:
-    with transaction.atomic(durable=True):
+    with transaction.atomic(durable=not _nested):
         bind_and_verify_company(scope)
         receipt, replay = _claim(
             scope,
@@ -470,8 +471,9 @@ def post_document(
     revision: int,
     key: str,
     request_id: str | None = None,
+    _nested: bool = False,
 ) -> dict[str, Any]:
-    with transaction.atomic(durable=True):
+    with transaction.atomic(durable=not _nested):
         bind_and_verify_company(scope)
         receipt, replay = _claim(
             scope, "inventory.document.post", str(document_id), key, data | {"revision": revision}

@@ -1,5 +1,8 @@
 -- Apply as the schema owner after migrations. Keep platform/operator objects inaccessible.
 GRANT USAGE ON SCHEMA erp, identity, licensing TO quickaccounts_runtime;
+-- Database-backed Django sessions are framework state, not ERP policy/audit data.
+GRANT USAGE ON SCHEMA public TO quickaccounts_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.django_session TO quickaccounts_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA erp TO quickaccounts_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA identity TO quickaccounts_runtime;
 GRANT SELECT ON ALL TABLES IN SCHEMA licensing TO quickaccounts_runtime;

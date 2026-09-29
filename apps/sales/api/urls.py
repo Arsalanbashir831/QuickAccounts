@@ -1,5 +1,12 @@
 from django.urls import path
 
+from apps.sales.api.orders import (
+    ChannelCollectionView,
+    ChannelDetailView,
+    DeliveryView,
+    OrderCollectionView,
+    OrderDetailView,
+)
 from apps.sales.api.returns import (
     ReturnApplyCreditView,
     ReturnCollectionView,
@@ -21,6 +28,15 @@ from apps.sales.api.views import (
 )
 
 urlpatterns = [
+    path("sales/orders", OrderCollectionView.as_view(), name="sales-orders"),
+    path("sales/orders/<uuid:order_id>", OrderDetailView.as_view(), name="sales-order-detail"),
+    path("sales/channels", ChannelCollectionView.as_view(), name="sales-channels"),
+    path(
+        "sales/channels/<uuid:channel_id>", ChannelDetailView.as_view(), name="sales-channel-detail"
+    ),
+    path(
+        "sales/invoices/<uuid:invoice_id>/delivery", DeliveryView.as_view(), name="sales-delivery"
+    ),
     path(
         "sales/returns/<uuid:return_id>/stock-dispositions",
         ReturnStockDispositionView.as_view(),

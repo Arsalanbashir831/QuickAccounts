@@ -92,6 +92,7 @@ class ReplacementSerializer(ReturnPostSerializer):
 
 
 class StockDispositionSerializer(ReturnPostSerializer):
+    repair_job_id = serializers.UUIDField(required=False)
     line_id = serializers.UUIDField()
     from_warehouse_id = serializers.UUIDField()
     to_warehouse_id = serializers.UUIDField(required=False)
@@ -257,13 +258,22 @@ class ReturnVoidView(ReturnAPIView):
         )
 
 
+class ReturnCreditApplicationSerializer(serializers.Serializer):
+    target_invoice_id = serializers.UUIDField(required=False)
+    effective_date = serializers.DateField(required=False)
+
+
 class ReturnApplyCreditView(ReturnAPIView):
     @extend_schema(
-        request=None, responses=OpenApiTypes.OBJECT, operation_id="sales_return_apply_credit"
+        request=ReturnCreditApplicationSerializer,
+        responses=OpenApiTypes.OBJECT,
+        operation_id="sales_return_apply_credit",
     )
     def post(
         self, request: Request, tenant_id: uuid.UUID, company_id: uuid.UUID, return_id: uuid.UUID
     ) -> Response:
+        serializer = ReturnCreditApplicationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
         return _response(
             services.apply_return_credit(
                 _scope(request, tenant_id, company_id),
@@ -271,6 +281,7 @@ class ReturnApplyCreditView(ReturnAPIView):
                 revision=require_revision(request),
                 key=require_idempotency_key(request),
                 request_id=getattr(request, "request_id", None),
+                **serializer.validated_data,
             )
         )
 

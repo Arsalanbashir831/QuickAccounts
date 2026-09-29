@@ -89,7 +89,7 @@ def purchase_bill_detail(company_id: uuid.UUID, bill_id: uuid.UUID) -> dict[str,
                    l.line_account_id, a.code AS line_account_code,
                    l.description, l.quantity, l.unit_cost,
                    l.net_amount, l.tax_code_id, tc.code AS tax_code,
-                   l.credit_of_bill_line_id,
+                   l.credit_of_bill_line_id,l.credit_quantity_offset,
                    l.purchase_account_id_snapshot,
                    l.inventory_account_id_snapshot,
                    l.tax_amount, l.gross_amount

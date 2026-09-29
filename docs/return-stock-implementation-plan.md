@@ -12,6 +12,13 @@
 | R6 | Linked replacement sale, issue, credit and difference settlement | Implemented; three price-difference paths verified |
 | R8 | Current dead/slow-moving report; explicit returned-stock write-offs | Implemented; ordinary-stock impairment remains outside this flow |
 | R9 | Regression, rollback, immutability and migration gates | Implemented; PostgreSQL regression gates verified |
+| R10 | Returned-stock repair jobs and QC-gated release | Implemented; 411 fresh PostgreSQL tests pass; migration 0034 applied locally |
+| R11 | Credit applications to future customer invoices | Implemented; replay and concurrent consumption verified |
+| R12 | Consolidated invoice settlement/fulfillment/return summary | Implemented; stock issue is explicitly not delivery confirmation |
+| R13 | Independent linked/unmatched custody intake and matching | Implemented; focused PostgreSQL tests verified |
+| R14 | Dead-stock disposal cases, warehouse roles and clearance orchestration | Implemented; focused PostgreSQL tests verified |
+| R15 | Supplier claims and broader physical supplier-return provenance | Implemented within conservative full/partial, one-hop scope; focused PostgreSQL tests verified |
+| R16 | Sales-order lifecycle and explicit delivery confirmation | Implemented; focused PostgreSQL tests verified |
 
 R1 has no database writes or public posting endpoints. Posting services must supply
 locked source facts and separately validate original tax components, prior price
@@ -31,8 +38,8 @@ credits, UOM, fulfillment, currency and exchange-rate eligibility.
 
 ## Approved policies and supported boundaries
 
-Bill back means customer cash back/refund (confirmed by the user); supplier
-claims are outside this scope. Refunds require eligible received cash; credits use
+Bill back means customer cash back/refund (confirmed by the user). Supplier
+claims are a separate, explicitly approved physical-return workflow. Refunds require eligible received cash; credits use
 original sale/tax values. Damaged stock retains historical cost until an explicitly
 approved write-off. No-refund/warranty and excess goodwill remain unsupported.
 Dead-stock reports require a caller-selected inactivity threshold and never write
@@ -41,8 +48,8 @@ off inventory automatically.
 Posting currently supports functional-currency sales at exchange rate 1 and
 untracked stock. Refund receipts with withholding are blocked. Historical cost
 portions must fit functional-currency precision; otherwise posting fails closed
-until a rounding policy is approved. Ordinary-stock impairment, repairs, tracked
-lots/serials, foreign-currency return settlement and supplier claims are not included.
+until a rounding policy is approved. Ordinary-stock impairment, repair-cost capitalization, tracked
+lots/serials and foreign-currency customer return settlement are not included.
 
 ## R2 API and persistence contract
 
@@ -70,7 +77,8 @@ sale/reservation rejection, rollback and migration reverse/forward checks.
 - `POST sales/returns/{id}/replace`: posts an existing calculated replacement draft,
   links it and applies available return credit. Collect positive differences through
   normal receipts; refund eligible negative differences through the refund command.
-- `POST sales/returns/{id}/apply-credit`: applies remaining credit to the original sale.
+- `POST sales/returns/{id}/apply-credit`: applies remaining credit to the original sale
+  or an eligible future customer invoice.
 - `POST sales/returns/{id}/stock-dispositions`: transfers segregated returned stock
   or writes it off with explicit approval and `inventory.write_off` permission.
 - `GET reports/dead-stock?inactive_days=N`: current positive stock by location with
@@ -99,3 +107,58 @@ Migrations 0017–0019 have been applied to the local development database; depl
 to other environments still follows their normal migration and runtime-grant process.
 Detail responses include at most 200 recent settlement/disposition history records;
 remaining-credit totals are independently aggregated over the complete history.
+
+## Expanded diagram alignment: approved policies
+
+The expanded retail/wholesale diagram now has explicit commands for R13–R16. The user
+approved custody-only handling for unmatched invoice-less returns until verified
+sale matching, repair estimates without automatic capitalization, and no supplier
+claim receivable until explicit approval. Supplier cost variances remain blocked.
+Supplier claims settle only against posted physical supplier credits; no claim
+receivable is created. Full/partial untracked returns and one provable one-hop
+transfer are supported; mixed provenance and cost variances remain blocked.
+See [the Phase 5 completion contract](phase-5-completion.md) for commands and
+supported boundaries.
+
+R10 APIs: `GET/POST inventory/repairs` and `GET/POST inventory/repairs/{id}`.
+Creation requires `If-Match` of the posted return; transitions require the repair
+revision. All commands require `Idempotency-Key`. Jobs track diagnosis,
+company-currency estimated cost, waiting-parts/on-hold/in-progress/repaired states,
+QC notes/actor/time and not-repairable decisions. No repair estimate changes GL
+or inventory cost. QC requires `inventory.quality.approve`; repair management
+requires `inventory.repair.manage`. Final passed-QC/not-repairable decisions and
+source identities cannot be changed or deleted.
+
+Transfers from segregated returned stock to sellable stock now require
+`repair_job_id` referring to matching passed QC. Damaged items must first complete
+repair; originally resellable items can receive a direct QC decision. Released
+quantity cannot exceed approved quantity or retained returned stock. Ordinary
+inventory transfers from non-sellable to sellable locations are blocked rather
+than allowed to bypass this protocol. Existing historical transfers are preserved;
+new releases must comply. Repair jobs currently require a posted linked return,
+not unmatched custody stock or general inbound-stock QC.
+
+R11 extends `sales/returns/{id}/apply-credit` with optional `target_invoice_id`
+and `effective_date`. Omitting both preserves the original behavior and receipt
+payload hash. A future target must be a posted original invoice for the same
+identified customer, currency, rate and receivable account. Application is capped
+at remaining credit and invoice balance, with source/target invoice locks ordered
+by ID. The existing database settlement guard enforces chronology and capacity;
+an additional guard protects customer/currency/control-account consistency.
+Applications move existing AR credit between documents, not cash or GL balances.
+
+R12 exposes `open_amount`, `settlement_status`, `fulfillment_status` and
+`return_summary` on posted original invoice detail. Settlement includes valid
+credit applications, so it is not mislabeled as cash payment. Stock fulfillment
+is derived from issued quantities; `delivery_confirmed` changes only when the
+separate delivery-confirmation command records evidence.
+
+Verification for R10–R12: all **411 tests passed on fresh PostgreSQL in 215.99s**,
+including real runtime-role repair/QC, forbidden QC bypass through return
+disposition, repair transition/revision guards, immutable final QC decisions,
+quantity caps, replay, concurrent future-credit consumption, and migration
+reverse/forward restoration. Ruff lint/changed-file formatting, mypy (205 source
+files), Django checks, warning-free OpenAPI validation, migration drift/pending
+checks, source checksums and diff whitespace checks pass. Migration 0034 and
+refreshed runtime grants were applied locally at that checkpoint. R13–R16 were
+subsequently implemented; staging/production qualification remains separate.

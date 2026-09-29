@@ -49,6 +49,14 @@ urlpatterns = [
         include("apps.payments.urls"),
     ),
     path(
+        "api/v1/tenants/<uuid:tenant_id>/companies/<uuid:company_id>/",
+        include("apps.jobs.urls"),
+    ),
+    path(
+        "api/v1/tenants/<uuid:tenant_id>/companies/<uuid:company_id>/",
+        include("apps.manufacturing.api.urls"),
+    ),
+    path(
         "api/v1/tenants/<uuid:tenant_id>/companies/<uuid:company_id>/reports/",
         include("apps.reporting.api.urls"),
     ),

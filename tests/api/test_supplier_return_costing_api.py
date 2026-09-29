@@ -24,7 +24,9 @@ from tests.api.test_sales_returns_api import _command
 pytestmark = [pytest.mark.api, pytest.mark.p0, pytest.mark.django_db(transaction=True)]
 
 
-def _setup(context: dict, *, legacy: str | None = None) -> dict:
+def _setup(
+    context: dict, *, legacy: str | None = None, partial_quantity: str | None = None
+) -> dict:
     client = context["client"]
     _enable_purchasing(client, context)
     _bind_license(context, ("module.purchasing", "module.inventory"))
@@ -74,6 +76,7 @@ def _setup(context: dict, *, legacy: str | None = None) -> dict:
             "bill_no": "DRAFT-RETURN",
             "bill_date": "2026-09-28",
             "source_line_ids": [posted.json()["lines"][0]["id"]],
+            **({"partial_quantities": [partial_quantity]} if partial_quantity else {}),
         },
         format="json",
     )

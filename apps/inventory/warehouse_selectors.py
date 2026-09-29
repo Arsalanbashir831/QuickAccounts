@@ -10,7 +10,8 @@ from common.api.errors import ScopeNotFound
 def warehouse_detail(company_id: uuid.UUID, warehouse_id: uuid.UUID) -> dict[str, Any]:
     with connection.cursor() as cursor:
         cursor.execute(
-            "SELECT id,code,name,address_text,stock_category,is_active,row_version,"
+            "SELECT id,code,name,address_text,stock_category,operational_role,"
+            "is_active,row_version,"
             "created_at,updated_at FROM erp.warehouses WHERE company_id=%s AND id=%s",
             [company_id, warehouse_id],
         )
@@ -25,7 +26,8 @@ def list_warehouses(
 ) -> list[dict[str, Any]]:
     with connection.cursor() as cursor:
         cursor.execute(
-            "SELECT id,code,name,address_text,stock_category,is_active,row_version "
+            "SELECT id,code,name,address_text,stock_category,operational_role,"
+            "is_active,row_version "
             "FROM erp.warehouses WHERE company_id=%s "
             "AND (%s::uuid IS NULL OR id>%s::uuid) ORDER BY id LIMIT %s",
             [company_id, after_id, after_id, limit + 1],

@@ -60,6 +60,36 @@ def _posting(context: dict) -> dict:
     return {"journal_id": str(context["journal"]), "fiscal_period_id": str(context["period"])}
 
 
+def _quality_approved(
+    context: dict, setup: dict, document: dict, warehouse_id: str, quantity: str = "1"
+) -> dict:
+    root = f"{_root(context)}/inventory/repairs"
+    response = _command(
+        setup["client"],
+        root,
+        {
+            "line_id": document["lines"][0]["id"],
+            "warehouse_id": warehouse_id,
+            "quantity": quantity,
+            "diagnosis": "Inspect and restore returned item",
+            "estimated_cost": "10",
+        },
+        document["row_version"],
+    )
+    assert response.status_code == 201, response.json()
+    job = response.json()
+    for status in ("in_progress", "repaired", "qc_passed"):
+        response = _command(
+            setup["client"],
+            f"{root}/{job['id']}",
+            {"status": status, "qc_notes": "Inspected, safe for resale"},
+            job["row_version"],
+        )
+        assert response.status_code == 200, response.json()
+        job = response.json()
+    return job
+
+
 def _paid(context: dict, setup: dict) -> dict:
     amount = setup["source"]["gross_total"]
     payment = _create(context, setup, amount)
@@ -476,14 +506,16 @@ def test_physical_inspection_disposition_and_historical_cost(
         assert debit == credit
 
     if disposition in {"quarantine", "damaged", "supplier_return"}:
+        job = _quality_approved(accounting_context, setup, posted.json(), dest["id"])
         # Release half without changing value, then explicitly write off the remainder.
         data = _posting(accounting_context) | {
             "line_id": document["lines"][0]["id"],
             "from_warehouse_id": dest["id"],
             "to_warehouse_id": str(setup["warehouse"]),
             "quantity": "0.5",
-            "action_date": "2026-09-27",
+            "action_date": str(dt.datetime.now(dt.UTC).date()),
             "reason": "Inspection approved release",
+            "repair_job_id": job["id"],
         }
         revision = posted.json()["row_version"]
         moved = _command(setup["client"], f"{url}/stock-dispositions", data, revision, "release")
@@ -494,7 +526,7 @@ def test_physical_inspection_disposition_and_historical_cost(
             _command(setup["client"], f"{url}/stock-dispositions", data, revision, "release").json()
             == moved.json()
         )
-        loss = {k: v for k, v in data.items() if k != "to_warehouse_id"}
+        loss = {k: v for k, v in data.items() if k not in {"to_warehouse_id", "repair_job_id"}}
         loss |= {"approve_write_off": True, "loss_account_id": str(setup["posting"]["cogs"])}
         written = _command(setup["client"], f"{url}/stock-dispositions", loss, revision)
         assert written.status_code == 200, written.json()

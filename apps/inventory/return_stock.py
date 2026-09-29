@@ -29,8 +29,9 @@ def dispose_return_stock(
     revision: int,
     key: str,
     request_id: str | None,
+    _nested: bool = False,
 ) -> dict[str, Any]:
-    with transaction.atomic(durable=True):
+    with transaction.atomic(durable=not _nested):
         bind_and_verify_company(scope)
         receipt, replay = _claim(
             scope, "sales.return.stock.dispose", str(return_id), key, data | {"revision": revision}
@@ -188,7 +189,8 @@ def dispose_return_stock(
             "INSERT INTO "
             "erp.sales_return_stock_actions(id,company_id,sales_return_line_id,from_ware"
             "house_id,to_warehouse_id,quantity,historical_cost,action_date,reason,loss_a"
-            "ccount_id,journal_entry_id) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "ccount_id,journal_entry_id,repair_job_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             [
                 action_id,
                 scope.company_id,
@@ -201,6 +203,7 @@ def dispose_return_stock(
                 data["reason"],
                 data.get("loss_account_id"),
                 entry,
+                data.get("repair_job_id"),
             ],
         )
         cost_basis = None

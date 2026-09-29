@@ -7,7 +7,7 @@ from apps.inventory.warehouse_selectors import warehouse_detail
 from common.access.scopes import CompanyScope, assert_company_write, bind_and_verify_company
 from common.api.errors import Conflict, PreconditionFailed, ScopeNotFound
 
-FIELDS = ("code", "name", "address_text", "stock_category", "is_active")
+FIELDS = ("code", "name", "address_text", "stock_category", "is_active", "operational_role")
 
 
 def save_warehouse(
@@ -27,8 +27,9 @@ def save_warehouse(
                 if warehouse_id is None:
                     cursor.execute(
                         "INSERT INTO erp.warehouses(company_id,code,name,address_text,"
-                        "stock_category,is_active) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
-                        [scope.company_id, *(data[field] for field in FIELDS)],
+                        "stock_category,is_active,operational_role) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                        [scope.company_id, *(data.get(field) for field in FIELDS)],
                     )
                     warehouse_id = cursor.fetchone()[0]
                 else:

@@ -6,6 +6,9 @@ from apps.inventory.api.costing import (
     CostPolicyView,
     CostReconciliationView,
 )
+from apps.inventory.api.custody import IntakeCollectionView, IntakeDetailView
+from apps.inventory.api.disposal import DisposalCollectionView, DisposalDetailView
+from apps.inventory.api.repairs import RepairCollectionView, RepairDetailView
 from apps.inventory.api.stock import (
     LotView,
     ReservationReleaseView,
@@ -33,6 +36,22 @@ from apps.inventory.api.warehouses import (
 from apps.inventory.dead_stock import DeadStockView
 
 urlpatterns = [
+    path("inventory/disposal-cases", DisposalCollectionView.as_view(), name="stock-disposal-list"),
+    path(
+        "inventory/disposal-cases/<uuid:case_id>",
+        DisposalDetailView.as_view(),
+        name="stock-disposal-detail",
+    ),
+    path("inventory/return-intakes", IntakeCollectionView.as_view(), name="return-intake-list"),
+    path(
+        "inventory/return-intakes/<uuid:intake_id>",
+        IntakeDetailView.as_view(),
+        name="return-intake-detail",
+    ),
+    path("inventory/repairs", RepairCollectionView.as_view(), name="return-repair-list"),
+    path(
+        "inventory/repairs/<uuid:job_id>", RepairDetailView.as_view(), name="return-repair-detail"
+    ),
     path(
         "inventory/cost-reconciliation",
         CostReconciliationView.as_view(),

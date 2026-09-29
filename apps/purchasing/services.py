@@ -798,6 +798,13 @@ def _validate_posting_tax(
               ON credit_line.company_id=c.company_id
              AND credit_line.purchase_bill_id=c.purchase_bill_id
              AND credit_line.id=c.purchase_bill_line_id
+            JOIN erp.purchase_bill_lines source_line
+              ON source_line.company_id=credit_line.company_id
+             AND source_line.id=credit_line.credit_of_bill_line_id
+            JOIN erp.purchase_bills credit_bill
+              ON credit_bill.company_id=credit_line.company_id
+             AND credit_bill.id=credit_line.purchase_bill_id
+            JOIN erp.currencies curr ON curr.code=credit_bill.currency_code
             LEFT JOIN erp.purchase_bill_tax_components original
               ON original.company_id=credit_line.company_id
              AND original.purchase_bill_line_id=credit_line.credit_of_bill_line_id
@@ -805,10 +812,20 @@ def _validate_posting_tax(
             WHERE c.company_id=%s AND c.purchase_bill_id=%s AND (
                 original.id IS NULL
                 OR c.tax_rate_version_id<>original.tax_rate_version_id
-                OR c.taxable_base_amount<>original.taxable_base_amount
+                OR c.taxable_base_amount<>(
+                    round(original.taxable_base_amount*(credit_line.credit_quantity_offset+
+                    credit_line.quantity)/source_line.quantity,6)-
+                    round(original.taxable_base_amount*credit_line.credit_quantity_offset/
+                    source_line.quantity,6))
                 OR c.rate_snapshot<>original.rate_snapshot
-                OR c.tax_amount<>original.tax_amount
-                OR c.recoverable_amount<>original.recoverable_amount
+                OR c.tax_amount<>(round(original.tax_amount*(credit_line.credit_quantity_offset+
+                    credit_line.quantity)/source_line.quantity,curr.minor_units)-
+                    round(original.tax_amount*credit_line.credit_quantity_offset/
+                    source_line.quantity,curr.minor_units))
+                OR c.recoverable_amount<>(round(original.recoverable_amount*
+                    (credit_line.credit_quantity_offset+credit_line.quantity)/source_line.quantity,
+                    curr.minor_units)-round(original.recoverable_amount*
+                    credit_line.credit_quantity_offset/source_line.quantity,curr.minor_units))
                 OR c.input_tax_account_id_snapshot IS DISTINCT FROM
                    original.input_tax_account_id_snapshot
                 OR c.polarity_snapshot<>'credit'
@@ -816,7 +833,20 @@ def _validate_posting_tax(
             """,
             [company_id, bill_id],
         )
-        if invalid_credit is not None and int(invalid_credit[0]) > 0:
+        missing_credit = _execute(
+            """SELECT count(*) FROM erp.purchase_bill_lines l
+            JOIN erp.purchase_bill_tax_components original
+              ON original.company_id=l.company_id
+             AND original.purchase_bill_line_id=l.credit_of_bill_line_id
+            WHERE l.company_id=%s AND l.purchase_bill_id=%s AND NOT EXISTS(
+              SELECT 1 FROM erp.purchase_bill_tax_components c
+              WHERE c.company_id=l.company_id AND c.purchase_bill_line_id=l.id
+              AND c.tax_code_component_id=original.tax_code_component_id)""",
+            [company_id, bill_id],
+        )
+        if (invalid_credit is not None and int(invalid_credit[0]) > 0) or (
+            missing_credit is not None and int(missing_credit[0]) > 0
+        ):
             raise Conflict(
                 "CREDIT_TAX_SNAPSHOT_MISMATCH",
                 "Credit tax components must exactly reverse their source-line snapshots.",
@@ -1081,6 +1111,7 @@ def _insert_posting_journal_lines(
 def _stock_effects(
     scope: CompanyScope,
     bill_id: uuid.UUID,
+    bill_date: dt.date,
     warehouse_id: uuid.UUID,
     journal_entry_id: uuid.UUID,
     exchange_rate: decimal.Decimal,
@@ -1131,12 +1162,13 @@ def _stock_effects(
                     company_id,event_key,occurred_at,warehouse_id,item_id,movement_kind,
                     quantity_delta,unit_cost_company,value_delta_company,source_type,
                     source_id,source_line_id,journal_entry_id
-                ) VALUES (%s,%s,clock_timestamp(),%s,%s,'receipt',%s,%s,%s,
+                ) VALUES (%s,%s,%s,%s,%s,'receipt',%s,%s,%s,
                           'purchase_bill',%s,%s,%s)
                 """,
                 [
                     scope.company_id,
                     f"purchase_bill:{bill_id}:line:{line_id}",
+                    bill_date,
                     warehouse_id,
                     item_id,
                     quantity,
@@ -1463,6 +1495,7 @@ def post_purchase_bill(
                 _stock_effects(
                     scope,
                     bill_id,
+                    bill[3],
                     warehouse_id,
                     entry_id,
                     exchange_rate,
@@ -1475,6 +1508,7 @@ def post_purchase_bill(
                 issue_supplier_return(
                     scope,
                     bill_id,
+                    bill[3],
                     warehouse_id,
                     entry_id,
                     exchange_rate,
@@ -1551,6 +1585,7 @@ def create_linked_supplier_credit(
                     "Credit corrections require a posted original bill.",
                 )
             source_line_ids = data["source_line_ids"]
+            requested = dict(zip(source_line_ids, data.get("partial_quantities", []), strict=False))
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
@@ -1607,18 +1642,79 @@ def create_linked_supplier_credit(
                 [credit_id, scope.company_id, source_bill_id],
             )
             with connection.cursor() as cursor:
+                cursor.execute("SELECT minor_units FROM erp.currencies WHERE code=%s", [source[3]])
+                minor_units = cursor.fetchone()[0]
+
+                def portion(
+                    value: decimal.Decimal,
+                    before: decimal.Decimal,
+                    quantity: decimal.Decimal,
+                    original: decimal.Decimal,
+                    precision: int,
+                ) -> decimal.Decimal:
+                    return _money(value * (before + quantity) / original, precision) - _money(
+                        value * before / original, precision
+                    )
+
                 for line_no, source_line_id in enumerate(selected, start=1):
+                    cursor.execute(
+                        "SELECT quantity,net_amount,tax_amount FROM erp.purchase_bill_lines "
+                        "WHERE company_id=%s AND id=%s",
+                        [scope.company_id, source_line_id],
+                    )
+                    original_quantity, original_net, original_tax = cursor.fetchone()
+                    cursor.execute(
+                        "SELECT coalesce(sum(l.quantity),0),bool_or(b.status='draft') "
+                        "FROM erp.purchase_bill_lines l JOIN erp.purchase_bills b "
+                        "ON b.company_id=l.company_id AND b.id=l.purchase_bill_id "
+                        "WHERE l.company_id=%s AND l.credit_of_bill_line_id=%s "
+                        "AND b.status<>'void'",
+                        [scope.company_id, source_line_id],
+                    )
+                    offset, open_draft = cursor.fetchone()
+                    quantity = requested.get(source_line_id, original_quantity)
+                    if open_draft or quantity <= 0 or offset + quantity > original_quantity:
+                        raise Conflict(
+                            "BILL_LINE_ALREADY_CREDITED",
+                            "Supplier credit quantity exceeds the available source line.",
+                        )
+                    net = portion(original_net, offset, quantity, original_quantity, minor_units)
+                    cursor.execute(
+                        "SELECT id,taxable_base_amount,tax_amount,recoverable_amount "
+                        "FROM erp.purchase_bill_tax_components WHERE company_id=%s "
+                        "AND purchase_bill_line_id=%s ORDER BY id",
+                        [scope.company_id, source_line_id],
+                    )
+                    components = cursor.fetchall()
+                    component_amounts = [
+                        (
+                            component[0],
+                            portion(component[1], offset, quantity, original_quantity, 6),
+                            portion(component[2], offset, quantity, original_quantity, minor_units),
+                            portion(component[3], offset, quantity, original_quantity, minor_units),
+                        )
+                        for component in components
+                    ]
+                    tax = sum((c[2] for c in component_amounts), decimal.Decimal(0))
+                    if tax != portion(
+                        original_tax, offset, quantity, original_quantity, minor_units
+                    ):
+                        raise Conflict(
+                            "CREDIT_TAX_ROUNDING_REQUIRED",
+                            "Tax components cannot be apportioned without a rounding variance.",
+                        )
                     cursor.execute(
                         """
                         INSERT INTO erp.purchase_bill_lines(
                             company_id,purchase_bill_id,line_no,item_id,line_account_id,
                             description,quantity,unit_cost,net_amount,
                             tax_code_id,tax_amount,gross_amount,credit_of_bill_line_id,
-                            purchase_account_id_snapshot,inventory_account_id_snapshot
+                            purchase_account_id_snapshot,inventory_account_id_snapshot,
+                            credit_quantity_offset
                         ) SELECT company_id,%s,%s,item_id,line_account_id,description,
-                                 quantity,unit_cost,net_amount,tax_code_id,
-                                 tax_amount,gross_amount,id,purchase_account_id_snapshot,
-                                 inventory_account_id_snapshot
+                                 %s,unit_cost,%s,tax_code_id,
+                                 %s,%s,id,purchase_account_id_snapshot,
+                                 inventory_account_id_snapshot,%s
                           FROM erp.purchase_bill_lines
                          WHERE company_id=%s AND purchase_bill_id=%s AND id=%s
                         RETURNING id
@@ -1626,14 +1722,20 @@ def create_linked_supplier_credit(
                         [
                             credit_id,
                             line_no,
+                            quantity,
+                            net,
+                            tax,
+                            net + tax,
+                            offset,
                             scope.company_id,
                             source_bill_id,
                             source_line_id,
                         ],
                     )
                     credit_line_id = cursor.fetchone()[0]
-                    cursor.execute(
-                        """
+                    for component_id, base, amount, recoverable in component_amounts:
+                        cursor.execute(
+                            """
                         INSERT INTO erp.purchase_bill_tax_components(
                             company_id,purchase_bill_id,purchase_bill_line_id,tax_code_id,
                             tax_code_component_id,tax_jurisdiction_id,rate_schedule_id,
@@ -1647,25 +1749,26 @@ def create_linked_supplier_credit(
                             account_role_snapshot,polarity_snapshot
                         ) SELECT company_id,%s,%s,tax_code_id,tax_code_component_id,
                                  tax_jurisdiction_id,rate_schedule_id,tax_rate_version_id,
-                                 taxable_base_amount,rate_snapshot,tax_inclusive_snapshot,
-                                 tax_amount,recoverable_amount,rate_version_code_snapshot,
+                                 %s,rate_snapshot,tax_inclusive_snapshot,
+                                 %s,%s,rate_version_code_snapshot,
                                  calculation_method_snapshot,calculation_base_snapshot,
                                  fixed_amount_snapshot,recovery_percent_snapshot,
                                  rounding_method_snapshot,rounding_precision_snapshot,
                                  currency_code_snapshot,input_tax_account_id_snapshot,
                                  'input_tax','credit'
                           FROM erp.purchase_bill_tax_components
-                         WHERE company_id=%s AND purchase_bill_id=%s
-                           AND purchase_bill_line_id=%s
+                         WHERE company_id=%s AND id=%s
                         """,
-                        [
-                            credit_id,
-                            credit_line_id,
-                            scope.company_id,
-                            source_bill_id,
-                            source_line_id,
-                        ],
-                    )
+                            [
+                                credit_id,
+                                credit_line_id,
+                                base,
+                                amount,
+                                recoverable,
+                                scope.company_id,
+                                component_id,
+                            ],
+                        )
             result = purchase_bill_detail(scope.company_id, credit_id)
             assert result is not None
             return result

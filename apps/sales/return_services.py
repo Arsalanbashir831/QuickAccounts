@@ -334,22 +334,62 @@ def void_return(
 
 
 def apply_return_credit(
-    scope: CompanyScope, return_id: uuid.UUID, *, revision: int, key: str, request_id: str | None
+    scope: CompanyScope,
+    return_id: uuid.UUID,
+    *,
+    revision: int,
+    key: str,
+    request_id: str | None,
+    target_invoice_id: uuid.UUID | None = None,
+    effective_date: dt.date | None = None,
 ) -> dict[str, Any]:
     with transaction.atomic(durable=True):
         bind_and_verify_company(scope)
         receipt, replay = _claim(
-            scope, "sales.return.apply", str(return_id), key, {"revision": revision}
+            scope,
+            "sales.return.apply",
+            str(return_id),
+            key,
+            {"revision": revision}
+            | ({"target_invoice_id": target_invoice_id} if target_invoice_id is not None else {})
+            | ({"effective_date": effective_date} if effective_date is not None else {}),
         )
         assert_company_write(scope.company_id, "payments", "payments.post")
         if replay is not None:
             return replay
         _context(request_id)
+        if target_invoice_id is not None:
+            origin = _one(
+                "SELECT sales_invoice_id FROM erp.sales_returns WHERE company_id=%s AND id=%s",
+                [scope.company_id, return_id],
+            )
+            _rows(
+                "SELECT id FROM erp.sales_invoices WHERE company_id=%s AND id IN (%s,%s) "
+                "ORDER BY id FOR UPDATE",
+                [scope.company_id, origin["sales_invoice_id"], target_invoice_id],
+            )
         document, source = _locked(scope, return_id, revision, posted=True)
-        amount = _apply_credit(scope, return_id, source["id"], document["return_date"])
+        target = _source(scope.company_id, target_invoice_id or source["id"])
+        if target["id"] != source["id"] and source["partner_id"] is None:
+            raise Conflict(
+                "RETURN_CUSTOMER_REQUIRED", "Future credits need an identified customer."
+            )
+        if (target["partner_id"], target["currency_code"], target["exchange_rate"]) != (
+            source["partner_id"],
+            source["currency_code"],
+            source["exchange_rate"],
+        ) or _control(scope.company_id, target) != _control(scope.company_id, source):
+            raise Conflict(
+                "RETURN_CREDIT_TARGET_MISMATCH",
+                "Credit requires the same customer, currency and receivable account.",
+            )
+        date = effective_date or max(document["return_date"], target["issue_date"])
+        if date < max(document["return_date"], target["issue_date"]):
+            raise Conflict("RETURN_CREDIT_DATE_INVALID", "Application cannot precede its sources.")
+        amount = _apply_credit(scope, return_id, target["id"], date)
         if amount <= 0:
             raise Conflict(
-                "RETURN_CREDIT_NOT_APPLICABLE", "No remaining credit or original invoice balance."
+                "RETURN_CREDIT_NOT_APPLICABLE", "No remaining credit or target invoice balance."
             )
         application = _one(
             "SELECT id FROM erp.sales_return_credit_applications "

@@ -51,7 +51,7 @@ def sales_invoice_detail(company_id: uuid.UUID, invoice_id: uuid.UUID) -> dict[s
                    i.due_date, i.currency_code, i.exchange_rate, i.status,
                    i.row_version, i.calculated_at, i.journal_entry_id,
                    i.credit_of_invoice_id, i.posted_at, i.created_at, i.updated_at,
-                   i.stock_fulfillment,
+                   i.stock_fulfillment,i.sales_order_id,
                    coalesce(t.net_total, 0)::numeric(20,6) AS net_total,
                    coalesce(t.tax_total, 0)::numeric(20,6) AS tax_total,
                    coalesce(t.gross_total, 0)::numeric(20,6) AS gross_total
@@ -140,6 +140,50 @@ def sales_invoice_detail(company_id: uuid.UUID, invoice_id: uuid.UUID) -> dict[s
         for line in lines:
             line["tax_components"] = by_line.get(cast(str, line["id"]), [])
         result["lines"] = lines
+        if result["status"] == "posted" and result["document_kind"] == "invoice":
+            from apps.sales.return_selectors import invoice_return_summary
+            from apps.sales.return_services import _invoice_open
+
+            open_amount = _invoice_open(company_id, invoice_id)
+            gross = decimal.Decimal(str(result["gross_total"]))
+            result["open_amount"] = str(open_amount)
+            result["settlement_status"] = (
+                "settled"
+                if open_amount <= 0
+                else "partially_settled"
+                if open_amount < gross
+                else "unpaid"
+            )
+            result["return_summary"] = invoice_return_summary(company_id, invoice_id)
+            cursor.execute(
+                "SELECT coalesce(sum(l.quantity),0),coalesce(sum((SELECT "
+                "coalesce(-sum(m.quantity_delta),0) FROM erp.stock_movements m "
+                "WHERE m.company_id=l.company_id AND m.source_type='sales_invoice' "
+                "AND m.source_id=l.sales_invoice_id AND m.source_line_id=l.id "
+                "AND m.quantity_delta<0)),0) FROM erp.sales_invoice_lines l JOIN erp.items i "
+                "ON i.company_id=l.company_id AND i.id=l.item_id WHERE l.company_id=%s "
+                "AND l.sales_invoice_id=%s AND i.item_kind='stock'",
+                [company_id, invoice_id],
+            )
+            required, issued = cursor.fetchone()
+            result["fulfillment_status"] = (
+                "not_required"
+                if required == 0
+                else "fulfilled"
+                if issued >= required
+                else "partially_fulfilled"
+                if issued
+                else "unfulfilled"
+            )
+            # Warehouse issue is not proof that a carrier delivered the goods.
+            cursor.execute(
+                "SELECT id,delivered_date,delivery_reference,received_by,notes,confirmed_at "
+                "FROM erp.sales_deliveries WHERE company_id=%s AND sales_invoice_id=%s",
+                [company_id, invoice_id],
+            )
+            deliveries = _rows(cursor)
+            result["delivery_confirmed"] = bool(deliveries)
+            result["delivery"] = deliveries[0] if deliveries else None
         return result
 
 

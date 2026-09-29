@@ -1,5 +1,6 @@
 from django.urls import path
 
+from apps.purchasing.api.claims import SupplierClaimCollectionView, SupplierClaimDetailView
 from apps.purchasing.api.views import (
     PurchaseBillCalculateView,
     PurchaseBillCollectionView,
@@ -9,6 +10,16 @@ from apps.purchasing.api.views import (
 )
 
 urlpatterns = [
+    path(
+        "purchasing/supplier-claims",
+        SupplierClaimCollectionView.as_view(),
+        name="supplier-claim-list",
+    ),
+    path(
+        "purchasing/supplier-claims/<uuid:claim_id>",
+        SupplierClaimDetailView.as_view(),
+        name="supplier-claim-detail",
+    ),
     path("purchasing/bills", PurchaseBillCollectionView.as_view(), name="purchase-bill-list"),
     path(
         "purchasing/bills/<uuid:bill_id>",

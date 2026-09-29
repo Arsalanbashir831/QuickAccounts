@@ -257,10 +257,10 @@ def _write_conflict(exc: IntegrityError) -> Conflict:
 
 
 def create_sales_invoice(
-    scope: CompanyScope, data: dict[str, Any], *, request_id: str | None
+    scope: CompanyScope, data: dict[str, Any], *, request_id: str | None, _nested: bool = False
 ) -> dict[str, Any]:
     try:
-        with transaction.atomic(durable=True):
+        with transaction.atomic(durable=not _nested):
             bind_and_verify_company(scope)
             assert_company_write(scope.company_id, "sales", "sales.invoice.edit_draft")
             minor_units = _validate_header(
@@ -1091,6 +1091,7 @@ def _insert_posting_journal_lines(
 def _stock_effects(
     scope: CompanyScope,
     invoice_id: uuid.UUID,
+    issue_date: dt.date,
     warehouse_id: uuid.UUID,
     journal_entry_id: uuid.UUID,
     stock_accounts: dict[uuid.UUID, tuple[uuid.UUID, uuid.UUID]],
@@ -1194,13 +1195,14 @@ def _stock_effects(
                     id,company_id,event_key,occurred_at,warehouse_id,item_id,movement_kind,
                     quantity_delta,unit_cost_company,value_delta_company,source_type,
                     source_id,source_line_id,journal_entry_id
-                ) VALUES (%s,%s,%s,clock_timestamp(),%s,%s,'issue',%s,%s,%s,
+                ) VALUES (%s,%s,%s,%s,%s,%s,'issue',%s,%s,%s,
                           'sales_invoice',%s,%s,%s)
                 """,
                 [
                     movement_id := uuid.uuid4(),
                     scope.company_id,
                     f"sales_invoice:{invoice_id}:line:{line_id}",
+                    issue_date,
                     warehouse_id,
                     item_id,
                     -quantity,
@@ -1548,6 +1550,7 @@ def post_sales_invoice(
                     _stock_effects(
                         scope,
                         invoice_id,
+                        invoice[3],
                         warehouse_id,
                         entry_id,
                         stock_accounts,
