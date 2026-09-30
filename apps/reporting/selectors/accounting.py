@@ -10,6 +10,8 @@ def trial_balance(
     *,
     date_from: dt.date,
     date_to: dt.date,
+    limit: int = 201,
+    after: uuid.UUID | None = None,
 ) -> list[dict[str, Any]]:
     return fetch_all(
         """
@@ -28,11 +30,14 @@ def trial_balance(
         LEFT JOIN erp.journal_lines l ON l.company_id=a.company_id AND l.account_id=a.id
         LEFT JOIN erp.journal_entries e
           ON e.company_id=l.company_id AND e.id=l.journal_entry_id AND e.status='posted'
-        WHERE a.company_id=%s
+        WHERE a.company_id=%s AND (%s::uuid IS NULL OR (a.code,a.id) > (
+          SELECT prior.code,prior.id FROM erp.accounts prior
+          WHERE prior.company_id=a.company_id AND prior.id=%s))
         GROUP BY a.id,a.code,a.name,a.account_type,a.normal_balance,c.functional_currency
-        ORDER BY a.code,a.id
+        ORDER BY a.code,a.id LIMIT %s
         """,
-        [date_from, date_from, date_to, date_from, date_to, date_to, company_id],
+        [date_from, date_from, date_to, date_from, date_to, date_to, company_id,
+         after, after, limit],
     )
 
 
@@ -56,6 +61,9 @@ def general_ledger(
     date_from: dt.date,
     date_to: dt.date,
     limit: int,
+    after_date: dt.date | None = None,
+    after_entry: uuid.UUID | None = None,
+    after_line: int | None = None,
 ) -> list[dict[str, Any]]:
     return fetch_all(
         """
@@ -65,7 +73,8 @@ def general_ledger(
             JOIN erp.journal_lines l
               ON l.company_id=e.company_id AND l.journal_entry_id=e.id
             WHERE e.company_id=%s AND l.account_id=%s AND e.status='posted'
-              AND e.entry_date<%s
+              AND (e.entry_date<%s OR (%s::date IS NOT NULL AND e.entry_date<=%s
+                AND (e.entry_date,e.id,l.line_no)<=(%s::date,%s::uuid,%s)))
         ), movement AS (
             SELECT e.id AS entry_id,e.entry_number,e.entry_date,e.description AS entry_description,
                    l.id AS line_id,l.line_no,l.description,l.transaction_currency,
@@ -76,6 +85,7 @@ def general_ledger(
               ON l.company_id=e.company_id AND l.journal_entry_id=e.id
             WHERE e.company_id=%s AND l.account_id=%s AND e.status='posted'
               AND e.entry_date BETWEEN %s AND %s
+              AND (%s::date IS NULL OR (e.entry_date,e.id,l.line_no)>(%s::date,%s::uuid,%s))
             ORDER BY e.entry_date,e.id,l.line_no
             LIMIT %s
         )
@@ -91,10 +101,68 @@ def general_ledger(
             company_id,
             account_id,
             date_from,
+            after_date,
+            date_to,
+            after_date,
+            after_entry,
+            after_line,
             company_id,
             account_id,
             date_from,
             date_to,
+            after_date,
+            after_date,
+            after_entry,
+            after_line,
             limit,
         ],
+    )
+
+
+def tax_components(
+    company_id: uuid.UUID,
+    *,
+    date_from: dt.date,
+    date_to: dt.date,
+    limit: int = 201,
+    after: uuid.UUID | None = None,
+) -> list[dict[str, Any]]:
+    return fetch_all(
+        """
+        SELECT x.id,x.source_type,x.document_id,x.document_no,x.document_date,
+               x.tax_jurisdiction_id,x.tax_rate_version_id,x.tax_code_component_id,
+               x.taxable_base_amount,x.rate_snapshot,x.tax_amount,
+               x.recoverable_amount,x.tax_treatment
+        FROM (
+          SELECT t.id,'sales_invoice'::text source_type,t.sales_invoice_id document_id,
+            d.invoice_no document_no,d.issue_date document_date,
+            t.tax_jurisdiction_id,t.tax_rate_version_id,t.tax_code_component_id,
+            t.taxable_base_amount,t.rate_snapshot,t.tax_amount,
+            0::numeric recoverable_amount,NULL::text tax_treatment
+          FROM erp.sales_invoice_tax_components t JOIN erp.sales_invoices d
+            ON d.company_id=t.company_id AND d.id=t.sales_invoice_id
+          WHERE t.company_id=%s AND d.status='posted'
+            AND d.issue_date BETWEEN %s AND %s
+          UNION ALL
+          SELECT t.id,'purchase_bill',t.purchase_bill_id,d.bill_no,d.bill_date,
+            t.tax_jurisdiction_id,t.tax_rate_version_id,t.tax_code_component_id,
+            t.taxable_base_amount,t.rate_snapshot,t.tax_amount,
+            t.recoverable_amount,NULL::text
+          FROM erp.purchase_bill_tax_components t JOIN erp.purchase_bills d
+            ON d.company_id=t.company_id AND d.id=t.purchase_bill_id
+          WHERE t.company_id=%s AND d.status='posted'
+            AND d.bill_date BETWEEN %s AND %s
+          UNION ALL
+          SELECT t.id,'payment',t.payment_id,d.payment_no,d.payment_date,
+            t.tax_jurisdiction_id,t.tax_rate_version_id,t.tax_code_component_id,
+            t.taxable_base_amount,t.rate_snapshot,t.tax_amount,
+            0::numeric,t.tax_treatment
+          FROM erp.payment_tax_components t JOIN erp.payments d
+            ON d.company_id=t.company_id AND d.id=t.payment_id
+          WHERE t.company_id=%s AND d.status='posted'
+            AND d.payment_date BETWEEN %s AND %s
+        ) x WHERE (%s::uuid IS NULL OR x.id>%s) ORDER BY x.id LIMIT %s
+        """,
+        [company_id, date_from, date_to, company_id, date_from, date_to,
+         company_id, date_from, date_to, after, after, limit],
     )

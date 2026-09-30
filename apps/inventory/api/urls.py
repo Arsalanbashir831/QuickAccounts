@@ -9,10 +9,12 @@ from apps.inventory.api.costing import (
 from apps.inventory.api.custody import IntakeCollectionView, IntakeDetailView
 from apps.inventory.api.disposal import DisposalCollectionView, DisposalDetailView
 from apps.inventory.api.repairs import RepairCollectionView, RepairDetailView
+from apps.inventory.api.serials import SerialCollectionView, SerialDetailView, SerialHistoryView
 from apps.inventory.api.stock import (
     LotView,
     ReservationReleaseView,
     ReservationView,
+    SerialLotBatchView,
     StockCollectionView,
     StockDocumentView,
     StockPostView,
@@ -36,6 +38,18 @@ from apps.inventory.api.warehouses import (
 from apps.inventory.dead_stock import DeadStockView
 
 urlpatterns = [
+    path("inventory/serials", SerialCollectionView.as_view(), name="inventory-serial-list"),
+    path("inventory/lots/serial-bulk", SerialLotBatchView.as_view(), name="serial-lot-bulk"),
+    path(
+        "inventory/serials/<uuid:serial_id>",
+        SerialDetailView.as_view(),
+        name="inventory-serial-detail",
+    ),
+    path(
+        "inventory/serials/<uuid:serial_id>/history",
+        SerialHistoryView.as_view(),
+        name="inventory-serial-history",
+    ),
     path("inventory/disposal-cases", DisposalCollectionView.as_view(), name="stock-disposal-list"),
     path(
         "inventory/disposal-cases/<uuid:case_id>",

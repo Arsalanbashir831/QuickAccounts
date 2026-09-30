@@ -11,7 +11,7 @@ from apps.inventory.cost_basis import locked_cost_policy, record_cost_basis
 from apps.inventory.cost_layers import locked_layers, record_layer_uses
 from apps.inventory.costing import CostingError, scope_average_issue
 from apps.inventory.layer_costing import allocate_average_issue
-from apps.inventory.stock_commands import _item, _position
+from apps.inventory.stock_commands import _item, _position, _serial_reservation_event
 from apps.manufacturing.execution_costing import output_cost
 from apps.manufacturing.planning import PlanningError
 from apps.manufacturing.retries import retry_lock_failure
@@ -204,10 +204,10 @@ def release_order(
             [wip, output_account, scope.company_id, order_id],
         )
         for row in selected:
-            _run(
+            reservation = _one(
                 "INSERT INTO erp.inventory_reservations(company_id,warehouse_id,item_id,lot_id,"
                 "reservation_key,source_type,source_id,quantity) VALUES "
-                "(%s,%s,%s,%s,%s,'production_requirement',%s,%s)",
+                "(%s,%s,%s,%s,%s,'production_requirement',%s,%s) RETURNING *",
                 [
                     scope.company_id,
                     order["warehouse_id"],
@@ -218,6 +218,7 @@ def release_order(
                     row["quantity"],
                 ],
             )
+            _serial_reservation_event(scope.company_id, reservation, "production_reserved")
         return _done(scope, order, receipt, "released")
 
 
@@ -402,6 +403,7 @@ def issue_materials(
                 "company_id=%s AND id=%s",
                 [scope.company_id, r["id"]],
             )
+            _serial_reservation_event(scope.company_id, r, "production_reservation_consumed")
             position = _position(scope.company_id, r["warehouse_id"], r["item_id"], r["lot_id"])
             try:
                 calculated = scope_average_issue(
@@ -717,6 +719,7 @@ def cancel_execution(
                 "company_id=%s AND id=%s",
                 [scope.company_id, r["id"]],
             )
+            _serial_reservation_event(scope.company_id, r, "production_reservation_released")
         _run(
             "UPDATE erp.production_orders SET "
             "status='cancelled',execution_edit_xid=pg_current_xact_id(),cancellation_reason=%s"

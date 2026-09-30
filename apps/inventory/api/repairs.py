@@ -1,3 +1,4 @@
+import logging
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -18,9 +19,12 @@ from common.access.scopes import company_read_scope
 from common.api.errors import APIError, Conflict
 from common.api.headers import require_idempotency_key, require_revision
 
+logger = logging.getLogger(__name__)
+
 
 class RepairCreateSerializer(serializers.Serializer[dict[str, Any]]):
     line_id = serializers.UUIDField()
+    serial_id = serializers.UUIDField(required=False)
     warehouse_id = serializers.UUIDField()
     quantity = serializers.DecimalField(
         max_digits=20, decimal_places=6, min_value=Decimal("0.000001")
@@ -92,6 +96,7 @@ class RepairCollectionView(APIView):
                 request_id=getattr(request, "request_id", None),
             )
         except DatabaseError as exc:
+            logger.exception("Serialized repair creation failed a database invariant")
             raise Conflict(
                 "REPAIR_CONFLICT", "Repair violates a lifecycle/stock invariant."
             ) from exc

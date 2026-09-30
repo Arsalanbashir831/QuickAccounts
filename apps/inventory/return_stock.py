@@ -45,12 +45,33 @@ def dispose_return_stock(
             scope.company_id, data["fiscal_period_id"], data["journal_id"], data["action_date"]
         )
         line = _one(
-            "SELECT l.*,s.item_id,s.inventory_account_id_snapshot FROM "
+            "SELECT l.*,s.item_id,s.inventory_account_id_snapshot,i.track_serials FROM "
             "erp.sales_return_lines l JOIN erp.sales_invoice_lines s ON "
-            "s.company_id=l.company_id AND s.id=l.sales_invoice_line_id WHERE "
+            "s.company_id=l.company_id AND s.id=l.sales_invoice_line_id "
+            "JOIN erp.items i ON i.company_id=s.company_id AND i.id=s.item_id WHERE "
             "l.company_id=%s AND l.sales_return_id=%s AND l.id=%s FOR UPDATE OF l",
             [scope.company_id, return_id, data["line_id"]],
         )
+        serial_id = data.get("serial_id")
+        if bool(serial_id) != bool(line["track_serials"]):
+            raise Conflict(
+                "RETURN_STOCK_SERIAL_REQUIRED",
+                "A serialized disposition requires exactly one selected return serial.",
+            )
+        serial = None
+        if serial_id:
+            serial = _one(
+                "SELECT s.* FROM erp.inventory_serials s JOIN erp.sales_return_serials r "
+                "ON r.company_id=s.company_id AND r.serial_id=s.id AND r.status='posted' "
+                "WHERE s.company_id=%s AND s.id=%s AND r.sales_return_line_id=%s FOR UPDATE OF s",
+                [scope.company_id, serial_id, line["id"]],
+            )
+            if data["quantity"] != 1 or serial["current_warehouse_id"] != data["from_warehouse_id"]:
+                raise Conflict(
+                    "RETURN_STOCK_SERIAL_UNAVAILABLE",
+                    "Selected serial must be in the source warehouse and quantity must be one.",
+                )
+        lot_id = serial["lot_id"] if serial else None
         original_from = data["from_warehouse_id"]
         destination = data.get("to_warehouse_id")
         warehouses = sorted({original_from} | ({destination} if destination else set()), key=str)
@@ -75,8 +96,8 @@ def dispose_return_stock(
             # Match stock-command ordering: absent destination scopes lock the item.
             rows = _rows(
                 "SELECT * FROM erp.inventory_positions WHERE company_id=%s "
-                "AND warehouse_id=%s AND item_id=%s AND lot_id IS NULL FOR UPDATE",
-                [scope.company_id, warehouse_id, line["item_id"]],
+                "AND warehouse_id=%s AND item_id=%s AND lot_id IS NOT DISTINCT FROM %s FOR UPDATE",
+                [scope.company_id, warehouse_id, line["item_id"], lot_id],
             )
             if not rows:
                 _one(
@@ -93,7 +114,7 @@ def dispose_return_stock(
             "quantity,coalesce(sum(CASE WHEN to_warehouse_id=%s THEN historical_cost "
             "WHEN from_warehouse_id=%s THEN -historical_cost ELSE 0 END),0) cost FROM "
             "erp.sales_return_stock_actions WHERE company_id=%s AND "
-            "sales_return_line_id=%s",
+            "sales_return_line_id=%s AND serial_id IS NOT DISTINCT FROM %s",
             [
                 original_from,
                 original_from,
@@ -101,14 +122,27 @@ def dispose_return_stock(
                 original_from,
                 scope.company_id,
                 line["id"],
+                serial_id,
             ],
         )
-        quantity = balances["quantity"] + (
-            line["quantity"] if line["warehouse_id"] == original_from else 0
-        )
-        value = balances["cost"] + (
-            line["historical_cost"] if line["warehouse_id"] == original_from else 0
-        )
+        if serial:
+            receipt_cost = _one(
+                "SELECT value_delta_company AS cost FROM erp.stock_movements WHERE "
+                "company_id=%s AND source_type='sales_return' AND source_line_id=%s "
+                "AND lot_id=%s AND quantity_delta=1",
+                [scope.company_id, line["id"], lot_id],
+            )["cost"]
+            quantity = balances["quantity"] + (1 if line["warehouse_id"] == original_from else 0)
+            value = balances["cost"] + (
+                receipt_cost if line["warehouse_id"] == original_from else 0
+            )
+        else:
+            quantity = balances["quantity"] + (
+                line["quantity"] if line["warehouse_id"] == original_from else 0
+            )
+            value = balances["cost"] + (
+                line["historical_cost"] if line["warehouse_id"] == original_from else 0
+            )
         requested = data["quantity"]
         if (
             line["disposition"] == "write_off"
@@ -189,8 +223,8 @@ def dispose_return_stock(
             "INSERT INTO "
             "erp.sales_return_stock_actions(id,company_id,sales_return_line_id,from_ware"
             "house_id,to_warehouse_id,quantity,historical_cost,action_date,reason,loss_a"
-            "ccount_id,journal_entry_id,repair_job_id) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "ccount_id,journal_entry_id,repair_job_id,serial_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             [
                 action_id,
                 scope.company_id,
@@ -204,6 +238,7 @@ def dispose_return_stock(
                 data.get("loss_account_id"),
                 entry,
                 data.get("repair_job_id"),
+                serial_id,
             ],
         )
         cost_basis = None
@@ -215,8 +250,8 @@ def dispose_return_stock(
                 "INSERT INTO "
                 "erp.stock_movements(id,company_id,event_key,occurred_at,warehouse_id,item_id,m"
                 "ovement_kind,quantity_delta,unit_cost_company,value_delta_company,source_ty"
-                "pe,source_id,source_line_id,journal_entry_id) VALUES "
-                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'return_stock_action',%s,%s,%s)",
+                "pe,source_id,source_line_id,journal_entry_id,lot_id) VALUES "
+                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'return_stock_action',%s,%s,%s,%s)",
                 [
                     movement,
                     scope.company_id,
@@ -231,6 +266,7 @@ def dispose_return_stock(
                     action_id,
                     line["id"],
                     entry,
+                    lot_id,
                 ],
             )
             if sign == -1 and uses is not None:

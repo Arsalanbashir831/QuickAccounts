@@ -33,6 +33,9 @@ the container's `psql`, as shown above.
 uv run gunicorn config.wsgi:application
 uv run celery -A config worker --loglevel=INFO
 uv run celery -A config beat --loglevel=INFO
+# For the provider-free PostgreSQL job queue, run bounded sweeps from a trusted scheduler:
+uv run python manage.py run_internal_jobs --tenant-id TENANT_UUID --actor-user-id USER_UUID --queue imports
+uv run python manage.py run_internal_jobs --tenant-id TENANT_UUID --actor-user-id USER_UUID --queue reports --company-id COMPANY_UUID
 ```
 
 ## Implemented API surface
@@ -98,6 +101,9 @@ coordination, activation quota races, published-plan immutability, term validity
 boundaries across month-end and DST.
 
 Verified payment-provider fulfillment and webhook processing remain Phase 6 integration work.
+The provider-free Phase 6 internal job slice supports durable partner import/export,
+scoped job status, retries, and an atomic internal outbox relay. See the
+[internal jobs contract](docs/phase-6-internal-jobs.md) for worker scheduling and limits.
 Signed offline grants remain disabled until a signing service and its subject/audience/signature
 verification contract are selected. Country tax packs and the explicitly blocked
 inventory/return variants remain product decisions and are not guessed.

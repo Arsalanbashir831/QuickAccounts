@@ -16,6 +16,7 @@ from apps.inventory.api.serializers import _non_blank
 from apps.inventory.api.views import _limit, _scope
 from apps.inventory.stock_commands import (
     create_lot,
+    create_serial_lots_bulk,
     document_detail,
     post_document,
     rebuild_positions,
@@ -51,7 +52,7 @@ class StockDocumentSerializer(serializers.Serializer):
     )
     document_date = serializers.DateField()
     reason = serializers.CharField(max_length=2000, default="", allow_blank=True)
-    lines = StockLineSerializer(many=True, allow_empty=False, max_length=100)
+    lines = StockLineSerializer(many=True, allow_empty=False, max_length=2000)
 
 
 class StockPostSerializer(serializers.Serializer):
@@ -80,6 +81,15 @@ class LotSerializer(serializers.Serializer):
     expires_on = serializers.DateField(required=False, allow_null=True)
 
 
+class SerialLotBatchSerializer(serializers.Serializer):
+    item_id = serializers.UUIDField()
+    serial_numbers = serializers.ListField(
+        child=serializers.CharField(max_length=100, allow_blank=False),
+        min_length=1,
+        max_length=2000,
+    )
+
+
 class StockAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -90,6 +100,23 @@ class StockAPIView(APIView):
                 "STOCK_WRITE_CONFLICT", "Stock command conflicts with an inventory invariant."
             )
         return super().handle_exception(exc)
+
+
+class SerialLotBatchView(StockAPIView):
+    @extend_schema(request=SerialLotBatchSerializer, responses=OpenApiTypes.OBJECT)
+    def post(self, request: Request, tenant_id: uuid.UUID, company_id: uuid.UUID) -> Response:
+        data = SerialLotBatchSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        return Response(
+            create_serial_lots_bulk(
+                _scope(request, tenant_id, company_id),
+                data.validated_data["item_id"],
+                data.validated_data["serial_numbers"],
+                key=require_idempotency_key(request),
+                request_id=getattr(request, "request_id", None),
+            ),
+            status=201,
+        )
 
 
 class StockCollectionView(StockAPIView):

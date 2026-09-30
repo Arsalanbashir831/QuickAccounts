@@ -1116,6 +1116,7 @@ def _stock_effects(
     journal_entry_id: uuid.UUID,
     exchange_rate: decimal.Decimal,
     functional_minor_units: int,
+    serial_receipts: list[dict[str, Any]],
 ) -> None:
     warehouse = _execute(
         "SELECT 1 FROM erp.warehouses WHERE company_id=%s AND id=%s AND is_active FOR SHARE",
@@ -1141,13 +1142,21 @@ def _stock_effects(
             [scope.company_id, bill_id],
         )
         stock_lines = cursor.fetchall()
-    if any(row[5] or row[6] for row in stock_lines):
+    if any(row[5] for row in stock_lines):
         raise Conflict(
             "TRACKED_STOCK_RECEIPT_REQUIRED",
-            "Lot- or serial-tracked items require a typed goods-receipt workflow.",
+            "Lot-tracked items require a typed goods-receipt workflow.",
+        )
+    selected = {entry["purchase_bill_line_id"]: entry["serial_numbers"]
+                for entry in serial_receipts}
+    tracked_ids = {row[0] for row in stock_lines if row[6]}
+    if len(selected) != len(serial_receipts) or set(selected) != tracked_ids:
+        raise Conflict(
+            "PURCHASE_SERIAL_SELECTION_REQUIRED",
+            "Provide serials for every serialized bill line and no other lines.",
         )
     with connection.cursor() as cursor:
-        for line_id, item_id, quantity, net_amount, nonrecoverable_tax, _, _ in stock_lines:
+        for line_id, item_id, quantity, net_amount, nonrecoverable_tax, _, tracked in stock_lines:
             value = _money(
                 (cast(decimal.Decimal, net_amount) + cast(decimal.Decimal, nonrecoverable_tax))
                 * exchange_rate,
@@ -1156,6 +1165,41 @@ def _stock_effects(
             unit_cost = (value / cast(decimal.Decimal, quantity)).quantize(
                 decimal.Decimal("0.000001"), rounding=decimal.ROUND_HALF_UP
             )
+            if tracked:
+                labels = [label.strip() for label in selected[line_id]]
+                if (
+                    quantity != len(labels)
+                    or len({label.upper() for label in labels}) != len(labels)
+                    or any(not label for label in labels)
+                ):
+                    raise Conflict(
+                        "PURCHASE_SERIAL_COUNT_MISMATCH",
+                        "Serialized receipt requires one distinct serial per purchased unit.",
+                    )
+                cursor.execute(
+                    "INSERT INTO erp.inventory_lots(company_id,item_id,lot_code,serial_code) "
+                    "SELECT %s,%s,x.label,x.label FROM unnest(%s::text[]) x(label) "
+                    "RETURNING id,serial_code",
+                    [scope.company_id, item_id, labels],
+                )
+                lot_ids = {label.upper(): lot_id for lot_id, label in cursor.fetchall()}
+                values = [unit_cost] * (len(labels) - 1)
+                values.append(value - unit_cost * (len(labels) - 1))
+                cursor.execute(
+                    "INSERT INTO erp.stock_movements(company_id,event_key,occurred_at,"
+                    "warehouse_id,item_id,lot_id,movement_kind,quantity_delta,"
+                    "unit_cost_company,value_delta_company,source_type,source_id,"
+                    "source_line_id,journal_entry_id) SELECT %s,"
+                    "%s||':serial:'||x.lot_id::text,%s,%s,%s,x.lot_id,'receipt',1,"
+                    "x.cost,x.cost,'purchase_bill',%s,%s,%s FROM "
+                    "unnest(%s::uuid[],%s::numeric[]) x(lot_id,cost)",
+                    [
+                        scope.company_id, f"purchase_bill:{bill_id}:line:{line_id}",
+                        bill_date, warehouse_id, item_id, bill_id, line_id, journal_entry_id,
+                        [lot_ids[label.upper()] for label in labels], values,
+                    ],
+                )
+                continue
             cursor.execute(
                 """
                 INSERT INTO erp.stock_movements(
@@ -1227,6 +1271,15 @@ def post_purchase_bill(
             )
             if inventory_preflight is None:
                 raise ScopeNotFound()
+            if (
+                inventory_preflight[0] == "bill" and command.get("serial_returns")
+            ) or (
+                inventory_preflight[0] == "supplier_credit" and command.get("serial_receipts")
+            ):
+                raise Conflict(
+                    "PURCHASE_SERIAL_SELECTION_INVALID",
+                    "Serial receipt and return selections must match the document kind.",
+                )
             if inventory_preflight[0] == "supplier_credit":
                 changed_item = _execute(
                     "SELECT 1 FROM erp.purchase_bill_lines l JOIN erp.items item "
@@ -1500,6 +1553,7 @@ def post_purchase_bill(
                     entry_id,
                     exchange_rate,
                     functional_minor_units,
+                    command.get("serial_receipts", []),
                 )
             elif stock_accounts and is_credit:
                 from apps.inventory.supplier_returns import issue_supplier_return
@@ -1514,6 +1568,7 @@ def post_purchase_bill(
                     exchange_rate,
                     str(company_currency[0]),
                     functional_minor_units,
+                    command.get("serial_returns", []),
                 )
             _insert_posting_journal_lines(scope.company_id, entry_id, journal_lines)
             _execute("SELECT erp.post_journal_entry(%s,%s)", [scope.company_id, entry_id])

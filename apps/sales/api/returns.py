@@ -16,6 +16,7 @@ from apps.inventory.return_stock import dispose_return_stock
 from apps.sales import return_services as services
 from apps.sales.api.serializers import _non_blank
 from apps.sales.api.views import _limit, _scope
+from apps.sales.replacement_serials import link_replacement_serial, list_replacement_serials
 from apps.sales.return_selectors import invoice_return_summary, list_returns, return_detail
 from common.access.scopes import company_read_scope
 from common.api.errors import APIError, Conflict
@@ -63,6 +64,9 @@ class InspectionLineSerializer(serializers.Serializer):
     warehouse_id = serializers.UUIDField()
     loss_account_id = serializers.UUIDField(required=False)
     approve_write_off = serializers.BooleanField(default=False)
+    serial_ids = serializers.ListField(
+        child=serializers.UUIDField(), required=False, max_length=2000
+    )
 
 
 class InspectionSerializer(serializers.Serializer):
@@ -89,10 +93,70 @@ class ReplacementSerializer(ReturnPostSerializer):
     replacement_invoice_id = serializers.UUIDField()
     replacement_revision = serializers.IntegerField(min_value=1)
     warehouse_id = serializers.UUIDField(required=False)
+    stock_fulfillment = serializers.ChoiceField(
+        choices=["immediate", "deferred"], default="immediate"
+    )
+
+
+class ReplacementSerialLinkSerializer(serializers.Serializer[dict[str, Any]]):
+    original_serial_id = serializers.UUIDField()
+    replacement_serial_id = serializers.UUIDField()
+    replacement_invoice_line_id = serializers.UUIDField()
+
+
+class ReplacementSerialQuerySerializer(serializers.Serializer[dict[str, Any]]):
+    cursor = serializers.UUIDField(required=False)
+    limit = serializers.IntegerField(min_value=1, max_value=200, required=False)
+
+
+class ReturnReplacementSerialsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        parameters=[ReplacementSerialQuerySerializer], responses=OpenApiTypes.OBJECT,
+        operation_id="sales_replacement_serial_list",
+    )
+    def get(
+        self, request: Request, tenant_id: uuid.UUID, company_id: uuid.UUID, return_id: uuid.UUID
+    ) -> Response:
+        query = ReplacementSerialQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        after = query.validated_data.get("cursor")
+        limit = query.validated_data.get("limit", 50)
+        with company_read_scope(
+            _scope(request, tenant_id, company_id),
+            permission="sales.return.view", module="sales",
+        ):
+            return Response(list_replacement_serials(company_id, return_id, after, limit))
+
+    @extend_schema(
+        request=ReplacementSerialLinkSerializer,
+        responses=OpenApiTypes.OBJECT,
+        operation_id="sales_replacement_serial_link",
+    )
+    def post(
+        self, request: Request, tenant_id: uuid.UUID, company_id: uuid.UUID, return_id: uuid.UUID
+    ) -> Response:
+        serializer = ReplacementSerialLinkSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            result = link_replacement_serial(
+                _scope(request, tenant_id, company_id), return_id, serializer.validated_data,
+                revision=require_revision(request),
+                key=require_idempotency_key(request),
+                request_id=getattr(request, "request_id", None),
+            )
+        except DatabaseError as exc:
+            raise Conflict(
+                "REPLACEMENT_SERIAL_CONFLICT",
+                "Serials do not match the posted return and shipped replacement.",
+            ) from exc
+        return Response(result, status=201)
 
 
 class StockDispositionSerializer(ReturnPostSerializer):
     repair_job_id = serializers.UUIDField(required=False)
+    serial_id = serializers.UUIDField(required=False)
     line_id = serializers.UUIDField()
     from_warehouse_id = serializers.UUIDField()
     to_warehouse_id = serializers.UUIDField(required=False)

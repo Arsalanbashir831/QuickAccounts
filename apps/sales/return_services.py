@@ -243,8 +243,11 @@ def inspect_return(
                 "RETURN_INSPECTION_NOT_APPLICABLE", "Cash back has no physical inspection."
             )
         lines = _rows(
-            "SELECT id,quantity FROM erp.sales_return_lines WHERE company_id=%s AND "
-            "sales_return_id=%s ORDER BY id FOR UPDATE",
+            "SELECT l.id,l.quantity,l.sales_invoice_line_id,i.track_serials "
+            "FROM erp.sales_return_lines l JOIN erp.sales_invoice_lines s "
+            "ON s.company_id=l.company_id AND s.id=l.sales_invoice_line_id "
+            "JOIN erp.items i ON i.company_id=s.company_id AND i.id=s.item_id "
+            "WHERE l.company_id=%s AND l.sales_return_id=%s ORDER BY l.id FOR UPDATE OF l",
             [scope.company_id, return_id],
         )
         inspections = {line["line_id"]: line for line in data["lines"]}
@@ -260,6 +263,29 @@ def inspect_return(
                 raise Conflict(
                     "RETURN_RECEIVED_QUANTITY_MISMATCH",
                     "Revise the return draft to match received quantities.",
+                )
+            serial_ids = inspection.get("serial_ids", [])
+            if line["track_serials"]:
+                if line["quantity"] != len(serial_ids) or len(set(serial_ids)) != len(serial_ids):
+                    raise Conflict(
+                        "RETURN_SERIAL_COUNT_MISMATCH",
+                        "Identify each distinct serialized unit received for this return line.",
+                    )
+                if inspection["disposition"] == "write_off":
+                    raise Conflict(
+                        "SERIAL_WRITE_OFF_WORKFLOW_REQUIRED",
+                        "Serialized units require a separate approved disposition after intake.",
+                    )
+                _run(
+                    "INSERT INTO erp.sales_return_serials(company_id,sales_return_id,"
+                    "sales_return_line_id,serial_id,source_sales_invoice_line_id) "
+                    "SELECT %s,%s,%s,x.serial_id,%s FROM unnest(%s::uuid[]) x(serial_id)",
+                    [scope.company_id, return_id, line["id"],
+                     line["sales_invoice_line_id"], serial_ids],
+                )
+            elif serial_ids:
+                raise Conflict(
+                    "RETURN_SERIAL_NOT_APPLICABLE", "Untracked items cannot name serial IDs."
                 )
             warehouse = _one(
                 "SELECT stock_category FROM erp.warehouses WHERE company_id=%s AND id=%s AND "
@@ -324,6 +350,11 @@ def void_return(
             return replay
         _context(request_id)
         _locked(scope, return_id, revision)
+        _run(
+            "UPDATE erp.sales_return_serials SET status='void' "
+            "WHERE company_id=%s AND sales_return_id=%s AND status='inspected'",
+            [scope.company_id, return_id],
+        )
         _run(
             "UPDATE erp.sales_returns SET status='void' WHERE company_id=%s AND id=%s",
             [scope.company_id, return_id],
@@ -709,11 +740,10 @@ def post_return(
                 if (
                     original["item_kind"] != "stock"
                     or original["track_lots"]
-                    or original["track_serials"]
                 ):
                     raise Conflict(
                         "RETURN_TRACKED_OR_NONSTOCK_UNSUPPORTED",
-                        "Physical returns currently require untracked stock items.",
+                        "Physical returns currently require untracked or serial-tracked stock.",
                     )
                 issue = _one(
                     "SELECT coalesce(-sum(quantity_delta),0) AS "
@@ -728,15 +758,36 @@ def post_return(
                         "RETURN_HISTORICAL_ISSUE_REQUIRED",
                         "Original fulfillment/cost history does not reconcile.",
                     )
-                cost = (
-                    _money(
-                        issue["cost"]
-                        * (prior["quantity"] + line["quantity"])
-                        / original["quantity"],
-                        6,
+                serial_costs: list[dict[str, Any]] = []
+                if original["track_serials"]:
+                    serial_costs = _rows(
+                        "SELECT s.id,s.lot_id,-m.value_delta_company AS cost "
+                        "FROM erp.sales_return_serials r JOIN erp.inventory_serials s "
+                        "ON s.company_id=r.company_id AND s.id=r.serial_id "
+                        "JOIN erp.stock_movements m ON m.company_id=s.company_id "
+                        "AND m.lot_id=s.lot_id AND m.source_type='sales_invoice' "
+                        "AND m.source_line_id=r.source_sales_invoice_line_id "
+                        "AND m.quantity_delta=-1 WHERE r.company_id=%s "
+                        "AND r.sales_return_line_id=%s AND r.status='inspected' "
+                        "ORDER BY s.id FOR UPDATE OF s",
+                        [scope.company_id, line["id"]],
                     )
-                    - prior["cost"]
-                )
+                    if len(serial_costs) != line["quantity"]:
+                        raise Conflict(
+                            "RETURN_SERIAL_COUNT_MISMATCH",
+                            "Inspected serials do not match the returned quantity or sale.",
+                        )
+                    cost = sum((row["cost"] for row in serial_costs), D(0))
+                else:
+                    cost = (
+                        _money(
+                            issue["cost"]
+                            * (prior["quantity"] + line["quantity"])
+                            / original["quantity"],
+                            6,
+                        )
+                        - prior["cost"]
+                    )
                 if _money(cost, source["functional_precision"]) != cost:
                     raise Conflict(
                         "RETURN_COST_ROUNDING_POLICY_REQUIRED",
@@ -769,26 +820,32 @@ def post_return(
                         (cogs, cost, False, stock_source, source["functional_precision"]),
                     ]
                 )
-                _run(
-                    "INSERT INTO "
-                    "erp.stock_movements(company_id,event_key,occurred_at,warehouse_id,item"
-                    "_id,movement_kind,quantity_delta,unit_cost_company,value_delta_company"
-                    ",source_type,source_id,source_line_id,journal_entry_id) VALUES (%s,%s,"
-                    "%s,%s,%s,'receipt',%s,%s,%s,'sales_return',%s,%s,%s)",
-                    [
-                        scope.company_id,
-                        f"return:{return_id}:{line['id']}:receipt",
-                        document["return_date"],
-                        line["warehouse_id"],
-                        original["item_id"],
-                        line["quantity"],
-                        _money(cost / line["quantity"], 6),
-                        cost,
-                        return_id,
-                        line["id"],
-                        entry,
-                    ],
-                )
+                if original["track_serials"]:
+                    for serial in serial_costs:
+                        _run(
+                            "INSERT INTO erp.stock_movements(company_id,event_key,occurred_at,"
+                            "warehouse_id,item_id,lot_id,movement_kind,quantity_delta,"
+                            "unit_cost_company,value_delta_company,source_type,source_id,"
+                            "source_line_id,journal_entry_id) VALUES "
+                            "(%s,%s,%s,%s,%s,%s,'receipt',1,%s,%s,'sales_return',%s,%s,%s)",
+                            [scope.company_id,
+                             f"return:{return_id}:{line['id']}:serial:{serial['id']}",
+                             document["return_date"], line["warehouse_id"],
+                             original["item_id"], serial["lot_id"], serial["cost"],
+                             serial["cost"], return_id, line["id"], entry],
+                        )
+                else:
+                    _run(
+                        "INSERT INTO "
+                        "erp.stock_movements(company_id,event_key,occurred_at,warehouse_id,item"
+                        "_id,movement_kind,quantity_delta,unit_cost_company,value_delta_company"
+                        ",source_type,source_id,source_line_id,journal_entry_id) VALUES (%s,%s,"
+                        "%s,%s,%s,'receipt',%s,%s,%s,'sales_return',%s,%s,%s)",
+                        [scope.company_id, f"return:{return_id}:{line['id']}:receipt",
+                         document["return_date"], line["warehouse_id"], original["item_id"],
+                         line["quantity"], _money(cost / line["quantity"], 6), cost,
+                         return_id, line["id"], entry],
+                    )
                 if line["disposition"] == "write_off":
                     assert_company_write(scope.company_id, "inventory", "inventory.write_off")
                     _account(
@@ -902,6 +959,11 @@ def post_return(
             "status='posted',credit_total=%s,journal_entry_id=%s,posted_at=clock_timestamp() "
             "WHERE company_id=%s AND id=%s",
             [total, entry, scope.company_id, return_id],
+        )
+        _run(
+            "UPDATE erp.sales_return_serials SET status='posted' "
+            "WHERE company_id=%s AND sales_return_id=%s AND status='inspected'",
+            [scope.company_id, return_id],
         )
         _apply_credit(scope, return_id, source["id"], document["return_date"])
         _effect(scope, return_id, "sales.return.posted")
@@ -1046,6 +1108,7 @@ def replace_return(
         command = {
             k: data[k] for k in ("journal_id", "fiscal_period_id", "warehouse_id") if k in data
         }
+        command["stock_fulfillment"] = data.get("stock_fulfillment", "immediate")
         post_sales_invoice(
             scope,
             replacement["id"],

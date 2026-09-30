@@ -46,7 +46,8 @@ def create_repair(
         _locked(scope, line["sales_return_id"], revision, posted=True)
         job = _one(
             "INSERT INTO erp.return_repair_jobs(company_id,sales_return_line_id,warehouse_id,"
-            "quantity,diagnosis,estimated_cost) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+            "quantity,diagnosis,estimated_cost,serial_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
             [
                 scope.company_id,
                 data["line_id"],
@@ -54,8 +55,20 @@ def create_repair(
                 data["quantity"],
                 data["diagnosis"],
                 data.get("estimated_cost", 0),
+                data.get("serial_id"),
             ],
         )
+        if data.get("serial_id") is not None:
+            _run(
+                "INSERT INTO erp.serial_movements(company_id,serial_id,movement_kind,"
+                "warehouse_id,quantity_delta,source_type,source_id,source_line_id,occurred_at,"
+                "actor_user_id) VALUES (%s,%s,'repair_received',%s,0,"
+                "'return_repair_job',%s,%s,clock_timestamp(),identity.current_user_id())",
+                [
+                    scope.company_id, data["serial_id"], data["warehouse_id"],
+                    job["id"], data["line_id"],
+                ],
+            )
         result = repair_detail(scope.company_id, job["id"])
         _effect(scope, job["id"], "inventory.repair.created", aggregate_type="return_repair_job")
         _finish(receipt, result, 201, result_type="return_repair_job")
@@ -112,6 +125,21 @@ def update_repair(
                 job_id,
             ],
         )
+        if job["serial_id"] is not None and data["status"] != job["status"]:
+            _run(
+                "INSERT INTO erp.serial_movements(company_id,serial_id,movement_kind,"
+                "warehouse_id,quantity_delta,source_type,source_id,source_line_id,occurred_at,"
+                "actor_user_id) VALUES (%s,%s,%s,%s,0,'return_repair_job',%s,%s,"
+                "clock_timestamp(),identity.current_user_id())",
+                [
+                    scope.company_id,
+                    job["serial_id"],
+                    data["status"],
+                    job["warehouse_id"],
+                    job_id,
+                    job["sales_return_line_id"],
+                ],
+            )
         result = repair_detail(scope.company_id, job_id)
         _effect(
             scope,

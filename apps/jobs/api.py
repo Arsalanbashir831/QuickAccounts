@@ -10,7 +10,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.jobs.services import artifact, cancel_job, job_detail, list_jobs, submit_job
+from apps.jobs.services import artifact, cancel_job, job_detail, job_status, list_jobs, submit_job
 from common.access.scopes import CompanyScope
 from common.api.errors import APIError
 
@@ -20,9 +20,12 @@ def _scope(request: Request, tenant_id: uuid.UUID, company_id: uuid.UUID) -> Com
 
 
 class JobSubmissionSerializer(serializers.Serializer[dict[str, Any]]):
-    job_type = serializers.ChoiceField(choices=["partner_export", "partner_import"])
+    job_type = serializers.ChoiceField(
+        choices=["partner_export", "partner_import", "financial_report_export"]
+    )
     job_key = serializers.CharField(max_length=200, allow_blank=False)
     rows = serializers.ListField(child=serializers.DictField(), required=False, max_length=100)
+    report = serializers.DictField(required=False)
 
 
 class JobCollectionView(APIView):
@@ -46,8 +49,17 @@ class JobCollectionView(APIView):
             values["job_type"],
             values["job_key"],
             values.get("rows"),
+            report=values.get("report"),
         )
         return Response(result, status=status.HTTP_202_ACCEPTED)
+
+
+class JobStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses=OpenApiTypes.OBJECT, operation_id="internal_jobs_status")
+    def get(self, request: Request, tenant_id: uuid.UUID, company_id: uuid.UUID) -> Response:
+        return Response(job_status(_scope(request, tenant_id, company_id)))
 
 
 class JobDetailView(APIView):
@@ -63,7 +75,7 @@ class JobDetailView(APIView):
 class JobCancelView(APIView):
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(responses=OpenApiTypes.OBJECT, operation_id="internal_job_cancel")
+    @extend_schema(request=None, responses=OpenApiTypes.OBJECT, operation_id="internal_job_cancel")
     def post(
         self, request: Request, tenant_id: uuid.UUID, company_id: uuid.UUID, job_id: uuid.UUID
     ) -> Response:

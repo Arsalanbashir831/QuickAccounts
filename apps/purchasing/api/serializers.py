@@ -93,10 +93,27 @@ class PurchaseBillPatchSerializer(serializers.Serializer):
         return attrs
 
 
+class SerialReceiptSelectionSerializer(serializers.Serializer):
+    purchase_bill_line_id = serializers.UUIDField()
+    serial_numbers = serializers.ListField(
+        child=serializers.CharField(max_length=100, validators=[_non_blank]),
+        min_length=1, max_length=2000,
+    )
+
+
+class SerialReturnSelectionSerializer(serializers.Serializer):
+    purchase_bill_line_id = serializers.UUIDField()
+    serial_ids = serializers.ListField(
+        child=serializers.UUIDField(), min_length=1, max_length=2000,
+    )
+
+
 class PurchaseBillPostSerializer(serializers.Serializer):
     fiscal_period_id = serializers.UUIDField()
     journal_id = serializers.UUIDField()
     warehouse_id = serializers.UUIDField(required=False, allow_null=True)
+    serial_receipts = SerialReceiptSelectionSerializer(many=True, required=False, max_length=50)
+    serial_returns = SerialReturnSelectionSerializer(many=True, required=False, max_length=50)
 
 
 class SupplierCreditCreateSerializer(serializers.Serializer):

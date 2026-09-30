@@ -44,6 +44,7 @@ INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "common.api.timing.RequestTimingMiddleware",
     "common.api.middleware.RequestIDMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -81,6 +82,7 @@ DATABASES["default"].update(
         "DISABLE_SERVER_SIDE_CURSORS": True,
     }
 )
+DATABASE_ROUTERS = ["common.db.primary_router.FinancialPrimaryRouter"]
 
 CACHES = {
     "default": {

@@ -14,6 +14,7 @@ from apps.sales.api.returns import (
     ReturnInspectView,
     ReturnPostView,
     ReturnRefundView,
+    ReturnReplacementSerialsView,
     ReturnReplacementView,
     ReturnStockDispositionView,
     ReturnSummaryView,
@@ -74,6 +75,11 @@ urlpatterns = [
         "sales/returns/<uuid:return_id>/replace",
         ReturnReplacementView.as_view(),
         name="sale-return-replace",
+    ),
+    path(
+        "sales/returns/<uuid:return_id>/replacement-serials",
+        ReturnReplacementSerialsView.as_view(),
+        name="sale-return-replacement-serials",
     ),
     path("sales/invoices", SalesInvoiceCollectionView.as_view(), name="sales-invoice-list"),
     path(

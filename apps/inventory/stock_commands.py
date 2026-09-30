@@ -185,6 +185,58 @@ def create_lot(
     return cast(dict[str, Any], result)
 
 
+def create_serial_lots_bulk(
+    scope: CompanyScope,
+    item_id: uuid.UUID,
+    serial_numbers: list[str],
+    *,
+    key: str,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    if not 1 <= len(serial_numbers) <= 2000:
+        raise Conflict("SERIAL_BATCH_SIZE", "Supply between 1 and 2,000 serials.")
+    cleaned = [number.strip() for number in serial_numbers]
+    if any(not 1 <= len(number) <= 100 for number in cleaned):
+        raise Conflict("INVALID_SERIAL", "Each serial must contain 1–100 characters.")
+    if len({number.upper() for number in cleaned}) != len(cleaned):
+        raise Conflict("DUPLICATE_SERIAL", "Serials must be unique within the batch.")
+    payload = {"item_id": str(item_id), "serial_numbers": cleaned}
+    with transaction.atomic(durable=True):
+        bind_and_verify_company(scope)
+        receipt, replay = _claim(scope, "inventory.serial_lots.bulk", str(item_id), key, payload)
+        assert_company_write(scope.company_id, "inventory", "inventory.manage")
+        if replay is not None:
+            return replay
+        _context(request_id)
+        item = _one(
+            "SELECT id,track_serials,item_kind,is_active FROM erp.items "
+            "WHERE company_id=%s AND id=%s FOR SHARE",
+            [scope.company_id, item_id],
+        )
+        if not item["track_serials"] or item["item_kind"] != "stock" or not item["is_active"]:
+            raise Conflict(
+                "SERIAL_ITEM_REQUIRED", "An active serial-tracked stock item is required."
+            )
+        rows = _rows(
+            "INSERT INTO erp.inventory_lots(company_id,item_id,lot_code,serial_code) "
+            "SELECT %s,%s,x.serial_number,x.serial_number "
+            "FROM unnest(%s::text[]) WITH ORDINALITY x(serial_number,ordinal) "
+            "ORDER BY x.ordinal RETURNING id,serial_code",
+            [scope.company_id, item_id, cleaned],
+        )
+        result = {
+            "id": str(item_id),
+            "item_id": str(item_id),
+            "count": len(rows),
+            "lots": _json(rows),
+        }
+        _effect(
+            scope, item_id, f"inventory.serial_lots.created.{receipt}", aggregate_type="item"
+        )
+        _finish(receipt, result, result_type="inventory_serial_lots")
+        return result
+
+
 def _draft(company: uuid.UUID, document_id: uuid.UUID, revision: int) -> dict[str, Any]:
     result = _one(
         "SELECT * FROM erp.inventory_documents WHERE company_id=%s AND id=%s FOR UPDATE",
@@ -349,6 +401,29 @@ def save_document(
         return result
 
 
+def _serial_reservation_event(
+    company_id: uuid.UUID, reservation: dict[str, Any], action: str
+) -> None:
+    if reservation["lot_id"] is None:
+        return
+    _run(
+        "INSERT INTO erp.serial_movements(company_id,serial_id,movement_kind,"
+        "warehouse_id,quantity_delta,source_type,source_id,source_line_id,occurred_at,"
+        "actor_user_id) SELECT %s,s.id,%s,%s,0,'inventory_reservation',%s,%s,"
+        "clock_timestamp(),identity.current_user_id() FROM erp.inventory_serials s "
+        "WHERE s.company_id=%s AND s.lot_id=%s",
+        [
+            company_id,
+            action,
+            reservation["warehouse_id"],
+            reservation["id"],
+            reservation["source_id"],
+            company_id,
+            reservation["lot_id"],
+        ],
+    )
+
+
 def reserve_stock(
     scope: CompanyScope, data: dict[str, Any], *, key: str, request_id: str | None = None
 ) -> dict[str, Any]:
@@ -388,6 +463,7 @@ def reserve_stock(
                 data["quantity"],
             ],
         )
+        _serial_reservation_event(scope.company_id, reservation, "reserved")
         _effect(
             scope, reservation["id"], "inventory.reserved", aggregate_type="inventory_reservation"
         )
@@ -447,6 +523,7 @@ def release_stock(
             "WHERE company_id=%s AND id=%s RETURNING *",
             [scope.company_id, reservation_id],
         )
+        _serial_reservation_event(scope.company_id, reservation, "reservation_released")
         _effect(scope, reservation_id, "inventory.released", aggregate_type="inventory_reservation")
         result = cast(dict[str, Any], _json(result))
         _finish(receipt, result, result_type="inventory_reservation")
@@ -563,6 +640,7 @@ def post_document(
             "SELECT pg_advisory_xact_lock_shared(hashtextextended(%s,0))",
             [f"inventory-rebuild:{scope.company_id}"],
         )
+        locked_missing_items: set[uuid.UUID] = set()
         for warehouse, item, lot in scopes:
             if not _rows(
                 "SELECT id FROM erp.inventory_positions WHERE company_id=%s "
@@ -571,10 +649,12 @@ def post_document(
             ):
                 # Projection creation happens only through the ledger's definer trigger.
                 # Inbound-only missing scopes are serialized by the item row.
-                _one(
-                    "SELECT id FROM erp.items WHERE company_id=%s AND id=%s FOR UPDATE",
-                    [scope.company_id, item],
-                )
+                if item not in locked_missing_items:
+                    _one(
+                        "SELECT id FROM erp.items WHERE company_id=%s AND id=%s FOR UPDATE",
+                        [scope.company_id, item],
+                    )
+                    locked_missing_items.add(item)
             else:
                 _position(scope.company_id, warehouse, item, lot)
         costs: list[tuple[dict[str, Any], D, uuid.UUID, uuid.UUID | None]] = []
@@ -584,15 +664,21 @@ def post_document(
         cost_basis: dict[uuid.UUID, dict[str, D]] = {}
         layer_balances: dict[tuple[Any, ...], list[LayerBalance] | None] = {}
         layer_uses: dict[uuid.UUID, list[LayerUse]] = {}
+        profiles: dict[uuid.UUID, dict[str, Any]] = {}
+        validated_assets: set[uuid.UUID] = set()
         for line in lines:
             _item(scope.company_id, line["item_id"], line["lot_id"], line["quantity"])
-            profile = _one(
-                "SELECT * FROM erp.item_accounting_profiles WHERE company_id=%s "
-                "AND item_id=%s FOR SHARE",
-                [scope.company_id, line["item_id"]],
-            )
+            if line["item_id"] not in profiles:
+                profiles[line["item_id"]] = _one(
+                    "SELECT * FROM erp.item_accounting_profiles WHERE company_id=%s "
+                    "AND item_id=%s FOR SHARE",
+                    [scope.company_id, line["item_id"]],
+                )
+            profile = profiles[line["item_id"]]
             inventory = profile["inventory_account_id"]
-            _account(scope.company_id, inventory, {"asset"})
+            if inventory not in validated_assets:
+                _account(scope.company_id, inventory, {"asset"})
+                validated_assets.add(inventory)
             offset = data.get("offset_account_id")
             if kind == "shipment":
                 source = _one(
@@ -652,6 +738,7 @@ def post_document(
                         "AND company_id=%s",
                         [reservation["id"], scope.company_id],
                     )
+                    _serial_reservation_event(scope.company_id, reservation, "reservation_consumed")
                 scope_key = (line["from_warehouse_id"], line["item_id"], line["lot_id"])
                 position = _position(scope.company_id, *scope_key)
                 quantity, stock_value = running.get(
@@ -710,44 +797,76 @@ def post_document(
             entry = _journal(
                 scope, document_id, "inventory_document", document["document_date"], data, key
             )
+            account_totals: dict[tuple[uuid.UUID, uuid.UUID], D] = {}
             for _unused_line, value, inventory, offset in costs:
-                if value:
-                    assert offset is not None
-                    if offset == inventory:
-                        raise Conflict(
-                            "STOCK_OFFSET_INVALID", "Inventory and offset accounts must differ."
-                        )
-                    debit = kind in {"receipt", "adjustment_in"}
-                    number = (
-                        _one(
-                            "SELECT count(*) n FROM erp.journal_lines WHERE company_id=%s "
-                            "AND journal_entry_id=%s",
-                            [scope.company_id, entry],
-                        )["n"]
-                        + 1
+                if not value:
+                    continue
+                assert offset is not None
+                if offset == inventory:
+                    raise Conflict(
+                        "STOCK_OFFSET_INVALID", "Inventory and offset accounts must differ."
                     )
-                    _line(
-                        scope.company_id,
-                        entry,
-                        number,
-                        inventory,
-                        value,
-                        debit,
-                        facts,
-                        facts["precision"],
-                    )
-                    _line(
-                        scope.company_id,
-                        entry,
-                        number + 1,
-                        offset,
-                        value,
-                        not debit,
-                        facts,
-                        facts["precision"],
-                    )
+                pair = (inventory, offset)
+                account_totals[pair] = account_totals.get(pair, D(0)) + value
+            debit = kind in {"receipt", "adjustment_in"}
+            for index, ((inventory, offset), value) in enumerate(
+                sorted(account_totals.items(), key=lambda row: (str(row[0][0]), str(row[0][1])))
+            ):
+                number = index * 2 + 1
+                _line(
+                    scope.company_id,
+                    entry,
+                    number,
+                    inventory,
+                    value,
+                    debit,
+                    facts,
+                    facts["precision"],
+                )
+                _line(
+                    scope.company_id,
+                    entry,
+                    number + 1,
+                    offset,
+                    value,
+                    not debit,
+                    facts,
+                    facts["precision"],
+                )
             _run("SELECT erp.post_journal_entry(%s,%s)", [scope.company_id, entry])
+        serialized_bulk_receipt = False
+        if kind == "receipt" and len(costs) >= 100:
+            serial_count = _one(
+                "SELECT count(*) AS quantity FROM erp.inventory_document_lines l "
+                "JOIN erp.items i ON i.company_id=l.company_id AND i.id=l.item_id "
+                "WHERE l.company_id=%s AND l.inventory_document_id=%s AND i.track_serials",
+                [scope.company_id, document_id],
+            )["quantity"]
+            serialized_bulk_receipt = serial_count == len(costs)
+        if serialized_bulk_receipt:
+            _run(
+                "INSERT INTO erp.stock_movements(company_id,event_key,occurred_at,"
+                "warehouse_id,item_id,lot_id,movement_kind,quantity_delta,"
+                "unit_cost_company,value_delta_company,source_type,source_id,"
+                "source_line_id,journal_entry_id,inventory_document_line_id) "
+                "SELECT %s,'inventory:'||%s||':'||x.line_id::text||':1',%s,"
+                "x.warehouse_id,x.item_id,x.lot_id,'receipt',1,x.value,"
+                "x.value,'inventory_document',%s,x.line_id,%s,x.line_id "
+                "FROM unnest(%s::uuid[],%s::uuid[],%s::uuid[],%s::uuid[],%s::numeric[]) "
+                "x(line_id,warehouse_id,item_id,lot_id,value)",
+                [
+                    scope.company_id, str(document_id), document["document_date"],
+                    document_id, entry,
+                    [line["id"] for line, _, _, _ in costs],
+                    [line["to_warehouse_id"] for line, _, _, _ in costs],
+                    [line["item_id"] for line, _, _, _ in costs],
+                    [line["lot_id"] for line, _, _, _ in costs],
+                    [value for _, value, _, _ in costs],
+                ],
+            )
         for line, value, _, _ in costs:
+            if serialized_bulk_receipt:
+                continue
             for warehouse, sign in ((line["from_warehouse_id"], -1), (line["to_warehouse_id"], 1)):
                 if warehouse:
                     movement_id = uuid.uuid4()

@@ -2,6 +2,7 @@
 
 import uuid
 from decimal import Decimal
+from typing import Any
 
 from apps.inventory.cost_basis import locked_cost_policy, record_cost_basis
 from apps.inventory.cost_layers import locked_layers, record_layer_uses
@@ -21,6 +22,7 @@ def issue_supplier_return(
     exchange_rate: Decimal,
     currency: str,
     precision: int,
+    serial_returns: list[dict[str, Any]],
 ) -> None:
     lines = _rows(
         "SELECT l.*,i.track_lots,i.track_serials,coalesce((SELECT sum(t.tax_amount-"
@@ -31,10 +33,18 @@ def issue_supplier_return(
         "AND i.item_kind='stock' ORDER BY l.item_id,l.id FOR UPDATE OF l",
         [scope.company_id, credit_id],
     )
-    if any(line["track_lots"] or line["track_serials"] for line in lines):
+    if any(line["track_lots"] for line in lines):
         raise Conflict(
             "TRACKED_SUPPLIER_RETURN_REQUIRED",
-            "Tracked supplier returns require explicit lot/serial selection.",
+            "Lot-tracked supplier returns require a separate physical return workflow.",
+        )
+    selected = {entry["purchase_bill_line_id"]: entry["serial_ids"]
+                for entry in serial_returns}
+    tracked_ids = {line["id"] for line in lines if line["track_serials"]}
+    if len(selected) != len(serial_returns) or set(selected) != tracked_ids:
+        raise Conflict(
+            "SUPPLIER_SERIAL_SELECTION_REQUIRED",
+            "Select exact serials for every serialized supplier-credit line.",
         )
     _run(
         "SELECT pg_advisory_xact_lock_shared(hashtextextended(%s,0))",
@@ -47,6 +57,8 @@ def issue_supplier_return(
     if not warehouses:
         raise Conflict("INVALID_WAREHOUSE", "Supplier return warehouse is unavailable.")
     for item in sorted({line["item_id"] for line in lines}, key=str):
+        if all(line["track_serials"] for line in lines if line["item_id"] == item):
+            continue
         if not _rows(
             "SELECT id FROM erp.inventory_positions WHERE company_id=%s "
             "AND warehouse_id=%s AND item_id=%s AND lot_id IS NULL FOR UPDATE",
@@ -55,6 +67,94 @@ def issue_supplier_return(
             raise Conflict("SUPPLIER_RETURN_STOCK_UNAVAILABLE", "The return stock scope is empty.")
     policy = locked_cost_policy(scope)
     for line in lines:
+        if line["track_serials"]:
+            serial_ids = selected[line["id"]]
+            if line["quantity"] != len(serial_ids) or len(set(serial_ids)) != len(serial_ids):
+                raise Conflict(
+                    "SUPPLIER_SERIAL_COUNT_MISMATCH",
+                    "Supplier credit requires one distinct selected serial per unit.",
+                )
+            serials = _rows(
+                "SELECT s.id,s.lot_id,s.item_id,s.current_warehouse_id,"
+                "m.source_type AS receipt_source_type,m.source_line_id AS receipt_line_id,"
+                "p.on_hand_quantity,p.reserved_quantity,p.value_company "
+                "FROM erp.inventory_serials s "
+                "JOIN erp.stock_movements m ON m.company_id=s.company_id "
+                "AND m.id=s.first_receipt_movement_id "
+                "JOIN erp.inventory_positions p ON p.company_id=s.company_id "
+                "AND p.item_id=s.item_id AND p.lot_id=s.lot_id "
+                "AND p.warehouse_id=s.current_warehouse_id "
+                "WHERE s.company_id=%s AND s.id=ANY(%s::uuid[]) "
+                "ORDER BY s.id FOR UPDATE OF s,p",
+                [scope.company_id, serial_ids],
+            )
+            expected = _money(
+                (line["net_amount"] + line["nonrecoverable_tax"]) * exchange_rate, precision
+            )
+            if len(serials) != len(serial_ids) or sum(
+                (row["value_company"] for row in serials), Decimal(0)
+            ) != expected:
+                raise Conflict(
+                    "SUPPLIER_RETURN_VARIANCE_POLICY_REQUIRED",
+                    "Selected serial inventory cost must match the linked supplier credit.",
+                )
+            for serial in serials:
+                if (
+                    serial["item_id"] != line["item_id"]
+                    or serial["current_warehouse_id"] != warehouse_id
+                    or serial["receipt_source_type"] != "purchase_bill"
+                    or serial["receipt_line_id"] != line["credit_of_bill_line_id"]
+                    or serial["on_hand_quantity"] != 1
+                    or serial["reserved_quantity"] != 0
+                ):
+                    raise Conflict(
+                        "SUPPLIER_RETURN_ORIGIN_REQUIRED",
+                        "Each selected serial must be available from the original bill receipt.",
+                    )
+                try:
+                    cost = scope_average_issue(
+                        on_hand=serial["on_hand_quantity"],
+                        reserved=serial["reserved_quantity"],
+                        stock_value=serial["value_company"],
+                        quantity=Decimal(1),
+                        currency_precision=precision,
+                    )
+                    layers = locked_layers(
+                        scope.company_id, (warehouse_id, line["item_id"], serial["lot_id"])
+                    )
+                    uses = allocate_average_issue(layers, cost) if layers is not None else None
+                except CostingError as exc:
+                    raise Conflict(exc.code, str(exc)) from exc
+                movement = uuid.uuid4()
+                _run(
+                    "INSERT INTO erp.stock_movements(id,company_id,event_key,occurred_at,"
+                    "warehouse_id,item_id,lot_id,movement_kind,quantity_delta,"
+                    "unit_cost_company,value_delta_company,source_type,source_id,"
+                    "source_line_id,journal_entry_id) VALUES "
+                    "(%s,%s,%s,%s,%s,%s,%s,'issue',-1,%s,%s,'purchase_bill',%s,%s,%s)",
+                    [
+                        movement, scope.company_id,
+                        f"supplier-return:{credit_id}:{line['id']}:{serial['id']}",
+                        credit_date, warehouse_id, line["item_id"], serial["lot_id"],
+                        cost.unit_cost_company, -cost.value_company,
+                        credit_id, line["id"], journal_id,
+                    ],
+                )
+                record_cost_basis(
+                    scope, movement, policy["id"],
+                    {
+                        "basis_quantity": serial["on_hand_quantity"],
+                        "basis_value_company": serial["value_company"],
+                        "reserved_quantity": serial["reserved_quantity"],
+                        "issue_quantity": Decimal(1),
+                        "issue_value_company": cost.value_company,
+                        "unit_cost_company": cost.unit_cost_company,
+                    },
+                    currency_code=currency, currency_precision=precision,
+                )
+                if uses is not None:
+                    record_layer_uses(scope.company_id, movement, uses)
+            continue
         origins = _rows(
             "SELECT m.* FROM erp.stock_movements m WHERE m.company_id=%s "
             "AND m.source_type='purchase_bill' AND m.source_line_id=%s AND m.quantity_delta>0",
