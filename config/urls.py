@@ -18,6 +18,7 @@ urlpatterns = [
         name="openapi-docs",
     ),
     path("api/v1/auth/", include("apps.identity.api.urls")),
+    path("api/auth/", include("apps.identity.api.urls")),
     path("api/v1/tenants/", include("apps.tenancy.api.urls")),
     path("platform-api/v1/", include("apps.licensing.platform_api.urls")),
     path(

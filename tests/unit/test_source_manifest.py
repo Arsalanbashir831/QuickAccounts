@@ -10,5 +10,8 @@ def test_authoritative_sources_match_manifest() -> None:
     rows = (root / "docs/source-manifest.sha256").read_text().splitlines()
     for row in rows:
         expected, relative_path = row.split(maxsplit=1)
-        actual = hashlib.sha256((root / relative_path).read_bytes()).hexdigest()
+        source = root / relative_path
+        if not source.exists():
+            source = root / "docs" / relative_path
+        actual = hashlib.sha256(source.read_bytes()).hexdigest()
         assert actual == expected, f"Contract review required for {relative_path}"

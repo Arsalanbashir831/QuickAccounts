@@ -1,3 +1,4 @@
+from datetime import timedelta
 from pathlib import Path
 
 import environ
@@ -98,13 +99,32 @@ CELERY_TASK_TIME_LIMIT = 300
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.SessionAuthentication",
+        "apps.identity.jwt.RevisionJWTAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "EXCEPTION_HANDLER": "common.api.exceptions.api_exception_handler",
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10),
+    "ALGORITHM": "HS256",
+    "SIGNING_KEY": env("JWT_SIGNING_KEY", default=SECRET_KEY),
+    "ISSUER": "quickaccounts",
+    "AUDIENCE": "quickaccounts-api",
+    "AUTH_HEADER_TYPES": ("Bearer",),
+    "USER_ID_FIELD": "id",
+    "USER_ID_CLAIM": "user_id",
+    "CHECK_USER_IS_ACTIVE": True,
+}
+AUTH_REFRESH_SESSION_SECONDS = env.int("AUTH_REFRESH_SESSION_SECONDS", default=30 * 24 * 3600)
+AUTH_REFRESH_COOKIE_NAME = env("AUTH_REFRESH_COOKIE_NAME", default="qa_refresh")
+AUTH_REFRESH_COOKIE_PATH = env("AUTH_REFRESH_COOKIE_PATH", default="/api/")
+AUTH_REFRESH_COOKIE_SECURE = env.bool("AUTH_REFRESH_COOKIE_SECURE", default=True)
+AUTH_REFRESH_COOKIE_SAMESITE = env("AUTH_REFRESH_COOKIE_SAMESITE", default="Lax")
+CSRF_TRUSTED_ORIGINS = env.list("DJANGO_CSRF_TRUSTED_ORIGINS", default=[])
+AUTH_LOGIN_FAILURE_LIMIT = env.int("AUTH_LOGIN_FAILURE_LIMIT", default=5)
+AUTH_LOGIN_FAILURE_WINDOW_SECONDS = env.int("AUTH_LOGIN_FAILURE_WINDOW_SECONDS", default=900)
 SPECTACULAR_SETTINGS = {
     "TITLE": "QuickAccounts ERP Accounting API",
     "VERSION": "1.0.0",

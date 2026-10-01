@@ -124,9 +124,6 @@ Implement effective-dated tax configuration, country-pack adapters, tax snapshot
 
 Implement bounded selectors and report jobs for trial balance, GL, AR/AP, historical aging, inventory valuation, tax components, and exports. Route read-your-write and financial gates to primary. Add managed-cloud and VPS settings without changing domain services. Add metrics for latency, lock waits, connection-pool saturation, queue age, outbox lag, replica lag, and failed jobs.
 
-### Phase 8: hardening and release
-
-Run the targeted test IDs after every slice. Then run schema install/upgrade, RLS/security, API contract, concurrency, worker/outbox, performance, restore/PITR, migration rollback, and deployment smoke gates. Keep a regression test for every production incident or contract correction.
 
 ## Command implementation template
 

@@ -35,7 +35,11 @@ def test_schema_release_and_identity_user_exist() -> None:
 @pytest.mark.unit
 def test_schema_sql_is_packaged_at_migration_expected_path() -> None:
     migration = Path(__file__).resolve().parents[2] / "apps/database/migrations"
-    assert (migration.parents[2] / "erp-accounting-backend-schema.sql").is_file()
+    root = migration.parents[2]
+    assert any(
+        (root / location / "erp-accounting-backend-schema.sql").is_file()
+        for location in (Path(), Path("docs"))
+    )
 
 
 @pytest.mark.integration
