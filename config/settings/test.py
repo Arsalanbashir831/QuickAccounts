@@ -1,5 +1,7 @@
 from config.settings.base import *  # noqa: F403
 
+PLATFORM_ALLOW_DEFAULT_CONNECTION = True
+
 # Existing domain fixtures use Django's test-only force_login helper. Production
 # settings remain JWT-only; targeted JWT tests exercise bearer authentication.
 REST_FRAMEWORK = {

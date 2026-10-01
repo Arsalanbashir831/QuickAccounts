@@ -3,6 +3,8 @@ from pathlib import Path
 
 import environ
 
+from common.api.schema_workflow import TAGS as WORKFLOW_TAGS
+
 BASE_DIR = Path(__file__).resolve().parents[2]
 env = environ.Env(
     DJANGO_DEBUG=(bool, False),
@@ -76,6 +78,8 @@ TEMPLATES = [
 ]
 
 DATABASES = {"default": env.db("DATABASE_URL", default="postgresql://localhost/quickaccounts")}
+if env("DATABASE_PLATFORM_URL", default=""):
+    DATABASES["platform"] = env.db("DATABASE_PLATFORM_URL")
 DATABASES["default"].update(
     {
         "CONN_MAX_AGE": 0,
@@ -83,6 +87,10 @@ DATABASES["default"].update(
         "DISABLE_SERVER_SIDE_CURSORS": True,
     }
 )
+if "platform" in DATABASES:
+    DATABASES["platform"].update(
+        CONN_MAX_AGE=0, ATOMIC_REQUESTS=False, DISABLE_SERVER_SIDE_CURSORS=True
+    )
 DATABASE_ROUTERS = ["common.db.primary_router.FinancialPrimaryRouter"]
 
 CACHES = {
@@ -128,6 +136,41 @@ AUTH_LOGIN_FAILURE_WINDOW_SECONDS = env.int("AUTH_LOGIN_FAILURE_WINDOW_SECONDS",
 SPECTACULAR_SETTINGS = {
     "TITLE": "QuickAccounts ERP Accounting API",
     "VERSION": "1.0.0",
+    "DESCRIPTION": (
+        "## API workflow\n\n"
+        "1. **Platform onboarding (superadmin only):** provision a tenant, initial company, "
+        "and owner at `/platform-api/v1/tenants`; add companies, publish a plan version, "
+        "issue a license, then explicitly assign it. These private commands require "
+        "`Idempotency-Key` and an audit reason. Business owners cannot register tenants "
+        "or bind licenses.\n"
+        "2. **Authenticate** at `/api/auth/`: obtain an access token, then send it as "
+        "`Authorization: Bearer <token>`. Refresh and logout use the HttpOnly cookie and "
+        "a CSRF token from `/api/auth/csrf/`.\n"
+        "3. **Set up the workspace**: choose an assigned tenant/company, enable modules, "
+        "then configure "
+        "partners, items, warehouses, accounts, and posting rules.\n"
+        "4. **Run business flows**: sales order → invoice draft → calculate → post → "
+        "delivery; purchase bill draft → calculate → post; receive or move stock as needed.\n"
+        "5. **Handle exceptions**: inspect returned goods → post the return → refund, "
+        "replace, repair, restock, or dispose; allocate and post payments separately.\n"
+        "6. **Close and review**: production execution, journal/period controls, "
+        "reconciliations, and reports.\n\n"
+        "Company-scoped routes use `/api/v1/tenants/{tenant_id}/companies/{company_id}/`. "
+        "Posted financial documents are generally immutable; use linked corrections or "
+        "reversals. Legacy auth aliases remain callable but are hidden from this reference."
+    ),
+    "TAGS": WORKFLOW_TAGS,
+    "PREPROCESSING_HOOKS": ["common.api.schema_workflow.canonical_workflow_endpoints"],
+    "POSTPROCESSING_HOOKS": [
+        "drf_spectacular.hooks.postprocess_schema_enums",
+        "common.api.schema_workflow.organize_workflow_schema",
+    ],
+    "SWAGGER_UI_SETTINGS": {
+        "deepLinking": True,
+        "docExpansion": "list",
+        "displayRequestDuration": True,
+        "filter": True,
+    },
     "SERVE_INCLUDE_SCHEMA": False,
     "ENUM_NAME_OVERRIDES": {
         "PartnerAddressKindEnum": ["billing", "shipping", "registered", "other"],
@@ -146,5 +189,6 @@ TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 ERP_PRODUCT_CODE = env("ERP_PRODUCT_CODE", default="quickaccounts")

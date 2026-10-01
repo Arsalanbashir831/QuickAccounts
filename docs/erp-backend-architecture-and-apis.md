@@ -807,7 +807,9 @@ These use the tenant or platform namespace, not company C.
 | Method and path | Contract / permissions |
 |---|---|
 | `GET /api/v1/tenants/{tenant_id}/license` | Bound product license, current/next term, effective features, read-only reason; tenant permission |
-| `POST /api/v1/tenants/{tenant_id}/license/redeem` | Redeem a server-issued credential with ownership/product checks, rate limiting, and idempotency; never create an arbitrary entitlement |
+| `POST /platform-api/v1/tenants` | Platform operator provisions tenant, initial company, owner account, and memberships atomically |
+| `POST /platform-api/v1/tenants/{tenant_id}/companies` | Platform operator adds an approved company for an existing tenant owner |
+| `POST /platform-api/v1/licenses/{license_id}/assign` | Platform operator explicitly assigns an active issued license; tenant owners cannot bind licenses |
 | `POST /api/v1/tenants/{tenant_id}/license/renewal-orders` | Create software subscription order for an offered plan; billing extension required |
 | `GET /api/v1/tenants/{tenant_id}/license/renewal-orders/{id}` | Inspect authorized billing/fulfillment status |
 | `GET, POST /api/v1/tenants/{tenant_id}/license/activations` | Inspect/allocate installations if the product uses them; enforced quota |

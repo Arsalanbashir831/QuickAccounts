@@ -6,7 +6,7 @@ from django.middleware.csrf import get_token
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
 from drf_spectacular.types import OpenApiTypes
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
@@ -14,7 +14,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.identity import refresh_sessions
-from apps.identity.api.serializers import PasswordChangeSerializer, TokenObtainSerializer
+from apps.identity.api.serializers import (
+    AccessTokenResponseSerializer,
+    CSRFResponseSerializer,
+    MeSerializer,
+    PasswordChangeSerializer,
+    SessionListSerializer,
+    TokenObtainSerializer,
+)
 from apps.identity.models import User
 from apps.identity.permissions import ActiveRefreshSession
 from apps.identity.token_services import change_password, login, logout, refresh
@@ -47,7 +54,10 @@ class CSRFView(APIView):
     permission_classes = [AllowAny]
 
     @method_decorator(ensure_csrf_cookie)
-    @extend_schema(responses=OpenApiTypes.OBJECT)
+    @extend_schema(
+        responses=CSRFResponseSerializer,
+        description="Get a CSRF token for the cookie-based refresh and logout requests.",
+    )
     def get(self, request: Request) -> Response:
         return Response({"csrf_token": get_token(request)})
 
@@ -56,7 +66,14 @@ class LoginView(APIView):
     authentication_classes: list[type] = []
     permission_classes = [AllowAny]
 
-    @extend_schema(request=TokenObtainSerializer, responses=OpenApiTypes.OBJECT)
+    @extend_schema(
+        request=TokenObtainSerializer,
+        responses=AccessTokenResponseSerializer,
+        description=(
+            "Log in with email and password. The access JWT is returned in JSON; "
+            "the opaque refresh credential is set only as an HttpOnly cookie."
+        ),
+    )
     def post(self, request: Request) -> Response:
         serializer = TokenObtainSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -77,7 +94,22 @@ class RefreshView(APIView):
     authentication_classes: list[type] = []
     permission_classes = [AllowAny]
 
-    @extend_schema(request=None, responses=OpenApiTypes.OBJECT)
+    @extend_schema(
+        request=None,
+        responses=AccessTokenResponseSerializer,
+        parameters=[
+            OpenApiParameter(
+                settings.AUTH_REFRESH_COOKIE_NAME,
+                OpenApiTypes.STR,
+                OpenApiParameter.COOKIE,
+                required=True,
+            ),
+            OpenApiParameter(
+                "X-CSRFToken", OpenApiTypes.STR, OpenApiParameter.HEADER, required=True
+            ),
+        ],
+        description="Rotate the refresh cookie once and return a new 10-minute access JWT.",
+    )
     def post(self, request: Request) -> Response:
         try:
             payload, credential = refresh(request.COOKIES.get(settings.AUTH_REFRESH_COOKIE_NAME))
@@ -97,7 +129,22 @@ class LogoutView(APIView):
     authentication_classes: list[type] = []
     permission_classes = [AllowAny]
 
-    @extend_schema(request=None, responses={204: None})
+    @extend_schema(
+        request=None,
+        responses={204: None},
+        parameters=[
+            OpenApiParameter(
+                settings.AUTH_REFRESH_COOKIE_NAME,
+                OpenApiTypes.STR,
+                OpenApiParameter.COOKIE,
+                required=False,
+            ),
+            OpenApiParameter(
+                "X-CSRFToken", OpenApiTypes.STR, OpenApiParameter.HEADER, required=True
+            ),
+        ],
+        description="Revoke this device's matching refresh session and clear its cookie.",
+    )
     def post(self, request: Request) -> Response:
         logout(request.COOKIES.get(settings.AUTH_REFRESH_COOKIE_NAME))
         response = Response(status=status.HTTP_204_NO_CONTENT)
@@ -119,7 +166,7 @@ class LogoutAllView(APIView):
 class SessionsView(APIView):
     permission_classes = [IsAuthenticated, ActiveRefreshSession]
 
-    @extend_schema(responses=OpenApiTypes.OBJECT)
+    @extend_schema(responses=SessionListSerializer)
     def get(self, request: Request) -> Response:
         sid = cast(Any, request.auth).get("sid") if request.auth else None
         current = UUID(sid) if sid else None
@@ -159,7 +206,7 @@ class PasswordChangeView(APIView):
 class MeView(APIView):
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(responses=OpenApiTypes.OBJECT)
+    @extend_schema(responses=MeSerializer)
     def get(self, request: Request) -> Response:
         user = cast(User, request.user)
         return Response(

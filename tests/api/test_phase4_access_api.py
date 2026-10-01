@@ -483,7 +483,7 @@ def test_renewal_order_replays_without_duplicates(accounting_context: dict[str, 
 @pytest.mark.api
 @pytest.mark.p0
 @pytest.mark.django_db(transaction=True)
-def test_issued_license_requires_explicit_idempotent_redemption(
+def test_issued_license_requires_operator_assignment(
     accounting_context: dict[str, object],
 ) -> None:
     operator = get_user_model().objects.create_superuser(
@@ -503,7 +503,6 @@ def test_issued_license_requires_explicit_idempotent_redemption(
         HTTP_IDEMPOTENCY_KEY="issue-license-for-redemption",
     )
     assert issued.status_code == 201, issued.json()
-    credential = issued.json()["credential"]
     new_license_id = issued.json()["id"]
     with connection.cursor() as cursor:
         cursor.execute(
@@ -518,33 +517,33 @@ def test_issued_license_requires_explicit_idempotent_redemption(
     client = accounting_context["client"]
     assert isinstance(client, APIClient)
     url = f"{_license_root(accounting_context)}/redeem"
-    first = client.post(
-        url,
-        {"credential": credential},
-        format="json",
-        HTTP_IDEMPOTENCY_KEY="redeem-license-one",
+    assert (
+        client.post(url, {"credential": issued.json()["credential"]}, format="json").status_code
+        == 404
     )
-    replay = client.post(
-        url,
-        {"credential": credential},
-        format="json",
-        HTTP_IDEMPOTENCY_KEY="redeem-license-one",
+    assign_url = f"/platform-api/v1/licenses/{new_license_id}/assign"
+    assert client.post(assign_url, {"reason": "Attempt"}, format="json").status_code == 403
+    blocked = operator_client.post(
+        assign_url, {"reason": "Approved replacement"}, format="json",
+        HTTP_IDEMPOTENCY_KEY="assign-license-blocked",
     )
-    duplicate = client.post(
-        url,
-        {"credential": credential},
-        format="json",
-        HTTP_IDEMPOTENCY_KEY="redeem-license-two",
+    assert blocked.status_code == 409, blocked.json()
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "UPDATE licensing.tenant_product_bindings SET license_id=NULL "
+            "WHERE tenant_id=%s AND product_id=%s",
+            [accounting_context["tenant"], accounting_context["product"]],
+        )
+    first = operator_client.post(
+        assign_url, {"reason": "Approved replacement"}, format="json",
+        HTTP_IDEMPOTENCY_KEY="assign-license-one",
     )
-
+    replay = operator_client.post(
+        assign_url, {"reason": "Approved replacement"}, format="json",
+        HTTP_IDEMPOTENCY_KEY="assign-license-one",
+    )
     assert first.status_code == 200, first.json()
-    assert replay.status_code == 200, replay.json()
     assert replay.json() == first.json()
-    assert first.json()["license_id"] == new_license_id
-    assert "credential" not in first.json()
-    assert "license_number_hash" not in first.json()
-    assert duplicate.status_code == 409, duplicate.json()
-    assert duplicate.json()["error"]["code"] == "LICENSE_ALREADY_REDEEMED"
     with connection.cursor() as cursor:
         cursor.execute(
             """
@@ -561,7 +560,7 @@ def test_issued_license_requires_explicit_idempotent_redemption(
         bound_license, redeemed_at, redeemed_by, event_count = cursor.fetchone()
     assert str(bound_license) == new_license_id
     assert redeemed_at is not None
-    assert str(redeemed_by) == str(accounting_context["user"])
+    assert str(redeemed_by) == str(operator.pk)
     assert event_count == 1
 
 

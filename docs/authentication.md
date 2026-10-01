@@ -30,6 +30,17 @@ JWT request body.
 
 Environment settings:
 
+VPS settings load the project-root `.env` automatically for local commands when present;
+variables supplied by the process or deployment environment take precedence.
+For example, run `uv run python manage.py check` and then
+`uv run python manage.py runserver 127.0.0.1:8000 --insecure` from the project
+root. The `--insecure` flag serves Django admin CSS/JS during local development
+when `DJANGO_DEBUG=false`; do not use it for production serving. For deployment,
+run `uv run python manage.py collectstatic --noinput` and serve `staticfiles/`
+at `/static/` from the web server.
+To apply new migrations, use the owner connection rather than the runtime role:
+`set -a; source .env; set +a; DATABASE_URL="$DATABASE_MIGRATION_URL" uv run python manage.py migrate`.
+
 - `JWT_SIGNING_KEY`: independent high-entropy signing key, required in production.
 - `AUTH_REFRESH_SESSION_SECONDS`: sliding refresh lifetime (default 30 days).
 - `AUTH_REFRESH_COOKIE_NAME`, `AUTH_REFRESH_COOKIE_PATH`,

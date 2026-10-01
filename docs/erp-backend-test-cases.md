@@ -164,7 +164,7 @@ Every fixture should expose IDs without relying on insertion order. Use UUID/ULI
 | LIC-009 | P0 / DB | Update a published plan version or published plan feature | Immutability trigger rejects the update/delete; a new version is required |
 | LIC-010 | P0 / CONC | Two devices activate against a license with quota one | One activation succeeds; the other receives a quota conflict; no over-quota state is visible |
 | LIC-011 | P1 / API | Heartbeat an existing activation after expiry; then deactivate it | Heartbeat cannot extend validity or consume a new quota; deactivation is allowed to release capacity |
-| LIC-012 | P0 / API | Redeem the same license credential twice with the same and different idempotency keys | Same key replays the first result; a different key is rejected as already redeemed/bound |
+| LIC-012 | P0 / API | Platform operator assigns the same issued license twice with the same and different idempotency keys | Same key replays the first result; a different key is rejected as already assigned; tenant-owner redemption is unavailable |
 | LIC-013 | P1 / API | Create a renewal order, retry after a timeout, and replay after fulfillment | One term and one billing event are created; order/result is discoverable by idempotency key |
 | LIC-014 | P0 / DB | Insert a signed grant with invalid signature, subject, audience, time window, or entitlement revision | Grant validity guard rejects it |
 | LIC-015 | P1 / API | Change binding, renew, revoke, and inspect entitlement cache/version | entitlement_revision increments; stale cache is rejected or refreshed before a protected write |
@@ -570,4 +570,3 @@ A pull request cannot merge if any P0 case fails, if schema install/upgrade is n
 10. Keep the authoritative journal, tax snapshots, license history, audit log, and outbox durable even when read projections and caches are rebuilt.
 
 The suite should grow by adding a regression case for every production incident, migration correction, country-pack change, and newly supported business workflow.
-

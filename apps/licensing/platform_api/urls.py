@@ -1,9 +1,27 @@
 from django.urls import path
 
-from apps.licensing.platform_api.views import LicenseIssueView, LicenseStatusView, PlanPublishView
+from apps.licensing.platform_api.views import (
+    CompanyProvisionView,
+    LicenseAssignView,
+    LicenseIssueView,
+    LicenseStatusView,
+    PlanPublishView,
+    TenantProvisionView,
+)
 
 urlpatterns = [
+    path("tenants", TenantProvisionView.as_view(), name="platform-tenant-provision"),
+    path(
+        "tenants/<uuid:tenant_id>/companies",
+        CompanyProvisionView.as_view(),
+        name="platform-company-provision",
+    ),
     path("licenses", LicenseIssueView.as_view(), name="platform-license-issue"),
+    path(
+        "licenses/<uuid:license_id>/assign",
+        LicenseAssignView.as_view(),
+        name="platform-license-assign",
+    ),
     path(
         "licenses/<uuid:license_id>/suspend",
         LicenseStatusView.as_view(),

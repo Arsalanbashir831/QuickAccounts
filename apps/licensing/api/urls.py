@@ -3,7 +3,6 @@ from django.urls import path
 from apps.licensing.api.views import (
     ActivationCommandView,
     ActivationListCreateView,
-    LicenseRedeemView,
     LicenseSummaryView,
     RenewalOrderDetailView,
     RenewalOrderListCreateView,
@@ -11,7 +10,6 @@ from apps.licensing.api.views import (
 
 urlpatterns = [
     path("license", LicenseSummaryView.as_view(), name="tenant-license"),
-    path("license/redeem", LicenseRedeemView.as_view(), name="tenant-license-redeem"),
     path(
         "license/activations",
         ActivationListCreateView.as_view(),

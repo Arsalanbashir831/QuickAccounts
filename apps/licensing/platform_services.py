@@ -7,18 +7,36 @@ import uuid
 from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from django.db import connection, transaction
+from django.conf import settings
+from django.contrib.auth.password_validation import validate_password
+from django.db import connections, transaction
 from django.utils import timezone
 
+from apps.identity.models import User
 from common.api.errors import Conflict, ScopeNotFound
 
 
 def _execute(sql: str, params: list[Any]) -> tuple[Any, ...] | None:
-    with connection.cursor() as cursor:
+    with connections[_platform_alias()].cursor() as cursor:
         cursor.execute(sql, params)
         if cursor.description is None:
             return None
         return cast(tuple[Any, ...] | None, cursor.fetchone())
+
+
+def _platform_alias() -> str:
+    if "platform" in settings.DATABASES:
+        return "platform"
+    if settings.DEBUG or getattr(settings, "PLATFORM_ALLOW_DEFAULT_CONNECTION", False):
+        return "default"
+    from common.api.errors import APIError
+
+    raise APIError(
+        code="PLATFORM_DATABASE_NOT_CONFIGURED",
+        message="Platform onboarding is unavailable until DATABASE_PLATFORM_URL is configured.",
+        status_code=503,
+        retryable=False,
+    )
 
 
 def _hash(payload: dict[str, Any]) -> bytes:
@@ -112,6 +130,244 @@ def _add_term(
     return local.replace(year=year, month=month, day=day).astimezone(dt.UTC)
 
 
+def provision_tenant(
+    operator_id: uuid.UUID,
+    *,
+    name: str,
+    company_code: str,
+    company_name: str,
+    currency: str,
+    timezone_name: str,
+    business_type: str,
+    owner_email: str,
+    owner_password: str,
+    reason: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    owner_email = User.objects.normalize_email(owner_email).lower()
+    payload = {
+        "name": name,
+        "company_code": company_code,
+        "company_name": company_name,
+        "currency": currency,
+        "timezone_name": timezone_name,
+        "business_type": business_type,
+        "owner_email": owner_email,
+        "password_fingerprint": hashlib.sha256(owner_password.encode()).hexdigest(),
+        "reason": reason,
+    }
+    validate_password(owner_password)
+    with transaction.atomic(using=_platform_alias(), durable=True):
+        replay = _claim_or_replay(
+            operator_id, "tenant.provision", owner_email, idempotency_key, payload
+        )
+        if replay is not None:
+            return replay
+        if _execute("SELECT 1 FROM identity.users WHERE email=%s", [owner_email]):
+            raise Conflict("OWNER_EMAIL_EXISTS", "This owner email is already registered.")
+        if not _execute("SELECT 1 FROM erp.currencies WHERE code=%s AND is_active", [currency]):
+            raise Conflict("CURRENCY_UNAVAILABLE", "The selected currency is not active.")
+        try:
+            ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError as exc:
+            raise Conflict("INVALID_TIMEZONE", "The company timezone is invalid.") from exc
+        tenant = _execute("INSERT INTO erp.tenants(name) VALUES (%s) RETURNING id", [name])
+        assert tenant is not None
+        tenant_id = tenant[0]
+        owner = User.objects.db_manager(_platform_alias()).create_user(owner_email, owner_password)
+        _execute(
+            "INSERT INTO identity.tenant_memberships(tenant_id,user_id,tenant_role) "
+            "VALUES (%s,%s,'owner')",
+            [tenant_id, owner.pk],
+        )
+        company = _execute(
+            "INSERT INTO erp.companies(tenant_id,code,legal_name,"
+            "functional_currency,timezone_name,business_type) "
+            "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+            [tenant_id, company_code, company_name, currency, timezone_name, business_type],
+        )
+        assert company is not None
+        _execute(
+            "INSERT INTO identity.company_memberships(tenant_id,company_id,user_id) "
+            "VALUES (%s,%s,%s)",
+            [tenant_id, company[0], owner.pk],
+        )
+        body = {
+            "tenant_id": str(tenant_id),
+            "company_id": str(company[0]),
+            "owner_user_id": str(owner.pk),
+        }
+        _record(
+            operator_id,
+            operation="tenant.provision",
+            resource_key=owner_email,
+            key=idempotency_key,
+            payload=payload,
+            body=body,
+            reason=reason,
+            action="tenant.provisioned",
+            object_type="tenant",
+            object_id=tenant_id,
+        )
+        return body
+
+
+def provision_company(
+    operator_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    *,
+    code: str,
+    legal_name: str,
+    currency: str,
+    timezone_name: str,
+    business_type: str,
+    owner_user_id: uuid.UUID,
+    reason: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    payload = {
+        "tenant_id": tenant_id,
+        "code": code,
+        "legal_name": legal_name,
+        "currency": currency,
+        "timezone_name": timezone_name,
+        "business_type": business_type,
+        "owner_user_id": owner_user_id,
+        "reason": reason,
+    }
+    with transaction.atomic(using=_platform_alias(), durable=True):
+        replay = _claim_or_replay(
+            operator_id, "company.provision", str(tenant_id), idempotency_key, payload
+        )
+        if replay is not None:
+            return replay
+        if not _execute("SELECT 1 FROM erp.tenants WHERE id=%s", [tenant_id]):
+            raise ScopeNotFound()
+        if not _execute("SELECT 1 FROM erp.currencies WHERE code=%s AND is_active", [currency]):
+            raise Conflict("CURRENCY_UNAVAILABLE", "The selected currency is not active.")
+        if not _execute(
+            "SELECT 1 FROM identity.tenant_memberships "
+            "WHERE tenant_id=%s AND user_id=%s AND tenant_role='owner' AND is_active",
+            [tenant_id, owner_user_id],
+        ):
+            raise Conflict(
+                "OWNER_NOT_IN_TENANT", "The selected user is not an active tenant owner."
+            )
+        if _execute(
+            "SELECT 1 FROM erp.companies WHERE tenant_id=%s AND code=%s", [tenant_id, code]
+        ):
+            raise Conflict("COMPANY_CODE_EXISTS", "This company code already exists in the tenant.")
+        try:
+            ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError as exc:
+            raise Conflict("INVALID_TIMEZONE", "The company timezone is invalid.") from exc
+        company = _execute(
+            "INSERT INTO erp.companies(tenant_id,code,legal_name,"
+            "functional_currency,timezone_name,business_type) "
+            "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+            [tenant_id, code, legal_name, currency, timezone_name, business_type],
+        )
+        assert company is not None
+        _execute(
+            "INSERT INTO identity.company_memberships(tenant_id,company_id,user_id) "
+            "VALUES (%s,%s,%s)",
+            [tenant_id, company[0], owner_user_id],
+        )
+        body = {
+            "tenant_id": str(tenant_id),
+            "company_id": str(company[0]),
+            "owner_user_id": str(owner_user_id),
+        }
+        _record(
+            operator_id,
+            operation="company.provision",
+            resource_key=str(tenant_id),
+            key=idempotency_key,
+            payload=payload,
+            body=body,
+            reason=reason,
+            action="company.provisioned",
+            object_type="company",
+            object_id=company[0],
+        )
+        return body
+
+
+def assign_license(
+    operator_id: uuid.UUID, license_id: uuid.UUID, *, reason: str, idempotency_key: str
+) -> dict[str, Any]:
+    payload = {"license_id": license_id, "reason": reason}
+    with transaction.atomic(using=_platform_alias(), durable=True):
+        replay = _claim_or_replay(
+            operator_id, "license.assign", str(license_id), idempotency_key, payload
+        )
+        if replay is not None:
+            return replay
+        license_row = _execute(
+            "SELECT tenant_id,product_id,status FROM licensing.licenses WHERE id=%s FOR UPDATE",
+            [license_id],
+        )
+        if license_row is None:
+            raise ScopeNotFound()
+        tenant_id, product_id, license_status = license_row
+        if license_status != "active":
+            raise Conflict("LICENSE_NOT_ACTIVE", "Only an active license can be assigned.")
+        term = _execute(
+            "SELECT 1 FROM licensing.license_terms WHERE license_id=%s "
+            "AND starts_at<=now() AND (expires_at IS NULL OR expires_at>now()) LIMIT 1",
+            [license_id],
+        )
+        if term is None:
+            raise Conflict("LICENSE_TERM_INACTIVE", "The license has no current term.")
+        binding = _execute(
+            "SELECT license_id FROM licensing.tenant_product_bindings "
+            "WHERE tenant_id=%s AND product_id=%s FOR UPDATE",
+            [tenant_id, product_id],
+        )
+        if binding is None:
+            raise Conflict("ENTITLEMENT_COORDINATOR_MISSING", "License coordinator is missing.")
+        if binding[0] is not None:
+            raise Conflict(
+                "LICENSE_ALREADY_ASSIGNED",
+                "A license is already assigned to this tenant and product.",
+            )
+        _execute(
+            "UPDATE licensing.tenant_product_bindings SET license_id=%s "
+            "WHERE tenant_id=%s AND product_id=%s",
+            [license_id, tenant_id, product_id],
+        )
+        _execute(
+            "UPDATE licensing.licenses SET redeemed_at=clock_timestamp(),redeemed_by=%s "
+            "WHERE id=%s",
+            [operator_id, license_id],
+        )
+        _execute(
+            "INSERT INTO licensing.license_events"
+            "(tenant_id,license_id,event_type,actor_reference,event_data) "
+            "VALUES (%s,%s,'redeemed',%s,%s::jsonb)",
+            [
+                tenant_id,
+                license_id,
+                str(operator_id),
+                json.dumps({"reason": reason, "source": "platform"}),
+            ],
+        )
+        body = {"id": str(license_id), "tenant_id": str(tenant_id), "status": "assigned"}
+        _record(
+            operator_id,
+            operation="license.assign",
+            resource_key=str(license_id),
+            key=idempotency_key,
+            payload=payload,
+            body=body,
+            reason=reason,
+            action="license.assigned",
+            object_type="license",
+            object_id=license_id,
+        )
+        return body
+
+
 def issue_license(
     operator_id: uuid.UUID,
     *,
@@ -121,7 +377,7 @@ def issue_license(
     idempotency_key: str,
 ) -> dict[str, Any]:
     payload = {"tenant_id": tenant_id, "plan_version_id": plan_version_id, "reason": reason}
-    with transaction.atomic(durable=True):
+    with transaction.atomic(using=_platform_alias(), durable=True):
         replay = _claim_or_replay(
             operator_id, "license.issue", str(tenant_id), idempotency_key, payload
         )
@@ -238,7 +494,7 @@ def change_license_status(
     idempotency_key: str,
 ) -> dict[str, Any]:
     payload = {"license_id": license_id, "action": action, "reason": reason}
-    with transaction.atomic(durable=True):
+    with transaction.atomic(using=_platform_alias(), durable=True):
         replay = _claim_or_replay(
             operator_id, f"license.{action}", str(license_id), idempotency_key, payload
         )
@@ -338,7 +594,7 @@ def publish_plan_version(
     idempotency_key: str,
 ) -> dict[str, Any]:
     payload = {"plan_version_id": plan_version_id, "reason": reason}
-    with transaction.atomic(durable=True):
+    with transaction.atomic(using=_platform_alias(), durable=True):
         replay = _claim_or_replay(
             operator_id, "plan.publish", str(plan_version_id), idempotency_key, payload
         )

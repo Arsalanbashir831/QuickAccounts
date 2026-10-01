@@ -5,6 +5,18 @@ GRANT USAGE ON SCHEMA public TO quickaccounts_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.django_session TO quickaccounts_runtime;
 -- Django's startup migration check reads this catalog; the runtime must not mutate it.
 GRANT SELECT ON public.django_migrations TO quickaccounts_runtime;
+-- The separate Django admin UI reads its recent-action log and built-in Group
+-- model. Keep these framework grants explicit rather than opening all public tables.
+GRANT SELECT, INSERT ON public.django_admin_log TO quickaccounts_runtime;
+GRANT SELECT ON public.django_content_type, public.auth_permission TO quickaccounts_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE ON
+    public.auth_group,
+    public.auth_group_permissions
+TO quickaccounts_runtime;
+GRANT USAGE, SELECT ON SEQUENCE
+    public.django_admin_log_id_seq,
+    public.auth_group_id_seq
+TO quickaccounts_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA erp TO quickaccounts_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA identity TO quickaccounts_runtime;
 GRANT SELECT ON ALL TABLES IN SCHEMA licensing TO quickaccounts_runtime;
