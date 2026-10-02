@@ -1,7 +1,12 @@
 import uuid
 from typing import cast
 
-from drf_spectacular.utils import OpenApiParameter, OpenApiTypes, extend_schema
+from drf_spectacular.utils import (
+    OpenApiExample,
+    OpenApiParameter,
+    OpenApiTypes,
+    extend_schema,
+)
 from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -13,11 +18,13 @@ from apps.licensing.platform_api.serializers import (
     LicenseIssueSerializer,
     LicenseStatusSerializer,
     PlanPublishSerializer,
+    PlanVersionCreateSerializer,
     TenantProvisionSerializer,
 )
 from apps.licensing.platform_services import (
     assign_license,
     change_license_status,
+    create_plan_version,
     issue_license,
     provision_company,
     provision_tenant,
@@ -177,3 +184,52 @@ class PlanPublishView(APIView):
             idempotency_key=require_idempotency_key(request),
         )
         return Response(body)
+
+
+class PlanVersionCreateView(APIView):
+    permission_classes = [IsPlatformOperator]
+
+    @extend_schema(
+        request=PlanVersionCreateSerializer,
+        responses={201: OpenApiTypes.OBJECT},
+        parameters=[IDEMPOTENCY_HEADER],
+        examples=[
+            OpenApiExample(
+                "Monthly Standard plan",
+                value={
+                    "plan_id": "0198f7d3-2a70-7000-8000-000000000001",
+                    "version_number": 1,
+                    "term_unit": "month",
+                    "term_count": 1,
+                    "max_activations": 3,
+                    "permits_offline_use": False,
+                    "price_currency": "PKR",
+                    "price_amount": "2500.000000",
+                    "features": [
+                        {"feature_code": "module.sales", "is_enabled": True},
+                        {
+                            "feature_code": "module.inventory",
+                            "is_enabled": True,
+                            "limit_value": "5.000000",
+                        },
+                    ],
+                    "reason": "Create the initial Standard monthly offering",
+                },
+                request_only=True,
+            )
+        ],
+        description=(
+            "Active superuser only. Create a draft version for an existing active plan, "
+            "including its feature entitlements. Publish the returned id separately before "
+            "issuing licenses. The reason and operator are audited."
+        ),
+    )
+    def post(self, request: Request) -> Response:
+        serializer = PlanVersionCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        body = create_plan_version(
+            cast(uuid.UUID, request.user.pk),
+            **serializer.validated_data,
+            idempotency_key=require_idempotency_key(request),
+        )
+        return Response(body, status=status.HTTP_201_CREATED)

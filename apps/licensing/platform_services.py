@@ -586,6 +586,108 @@ def change_license_status(
         return body
 
 
+def create_plan_version(
+    operator_id: uuid.UUID,
+    *,
+    plan_id: uuid.UUID,
+    version_number: int,
+    term_unit: str,
+    term_count: int | None,
+    max_activations: int,
+    permits_offline_use: bool,
+    price_currency: str | None,
+    price_amount: Any,
+    features: list[dict[str, Any]],
+    reason: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    payload = {
+        "plan_id": plan_id,
+        "version_number": version_number,
+        "term_unit": term_unit,
+        "term_count": term_count,
+        "max_activations": max_activations,
+        "permits_offline_use": permits_offline_use,
+        "price_currency": price_currency,
+        "price_amount": price_amount,
+        "features": features,
+        "reason": reason,
+    }
+    resource_key = f"{plan_id}:{version_number}"
+    with transaction.atomic(using=_platform_alias(), durable=True):
+        replay = _claim_or_replay(
+            operator_id, "plan_version.create", resource_key, idempotency_key, payload
+        )
+        if replay is not None:
+            return replay
+        plan = _execute(
+            "SELECT product_id FROM licensing.plans WHERE id=%s AND is_active FOR UPDATE",
+            [plan_id],
+        )
+        if plan is None:
+            raise Conflict("PLAN_UNAVAILABLE", "The selected plan does not exist or is inactive.")
+        if price_currency and not _execute(
+            "SELECT 1 FROM erp.currencies WHERE code=%s AND is_active", [price_currency]
+        ):
+            raise Conflict("CURRENCY_UNAVAILABLE", "The selected currency is not active.")
+        if _execute(
+            "SELECT 1 FROM licensing.plan_versions WHERE plan_id=%s AND version_number=%s",
+            [plan_id, version_number],
+        ):
+            raise Conflict(
+                "PLAN_VERSION_EXISTS", "This version number already exists for the plan."
+            )
+        row = _execute(
+            """
+            INSERT INTO licensing.plan_versions(
+                product_id,plan_id,version_number,term_unit,term_count,max_activations,
+                permits_offline_use,price_currency,price_amount
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id,product_id,created_at
+            """,
+            [
+                plan[0], plan_id, version_number, term_unit, term_count, max_activations,
+                permits_offline_use, price_currency, price_amount,
+            ],
+        )
+        assert row is not None
+        plan_version_id = cast(uuid.UUID, row[0])
+        for feature in features:
+            _execute(
+                """
+                INSERT INTO licensing.plan_features(
+                    plan_version_id,feature_code,is_enabled,limit_value
+                ) VALUES (%s,%s,%s,%s)
+                """,
+                [
+                    plan_version_id,
+                    feature["feature_code"],
+                    feature["is_enabled"],
+                    feature.get("limit_value"),
+                ],
+            )
+        body = {
+            "id": str(plan_version_id),
+            "product_id": str(row[1]),
+            "plan_id": str(plan_id),
+            "version_number": version_number,
+            "status": "draft",
+            "created_at": row[2].isoformat(),
+        }
+        _record(
+            operator_id,
+            operation="plan_version.create",
+            resource_key=resource_key,
+            key=idempotency_key,
+            payload=payload,
+            body=body,
+            reason=reason,
+            action="plan_version.created",
+            object_type="plan_version",
+            object_id=plan_version_id,
+        )
+        return body
+
+
 def publish_plan_version(
     operator_id: uuid.UUID,
     plan_version_id: uuid.UUID,

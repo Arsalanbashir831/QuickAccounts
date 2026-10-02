@@ -6,6 +6,7 @@ from apps.licensing.platform_api.views import (
     LicenseIssueView,
     LicenseStatusView,
     PlanPublishView,
+    PlanVersionCreateView,
     TenantProvisionView,
 )
 
@@ -17,6 +18,7 @@ urlpatterns = [
         name="platform-company-provision",
     ),
     path("licenses", LicenseIssueView.as_view(), name="platform-license-issue"),
+    path("plan-versions", PlanVersionCreateView.as_view(), name="platform-plan-version-create"),
     path(
         "licenses/<uuid:license_id>/assign",
         LicenseAssignView.as_view(),

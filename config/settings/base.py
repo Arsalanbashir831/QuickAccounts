@@ -139,7 +139,7 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": (
         "## API workflow\n\n"
         "1. **Platform onboarding (superadmin only):** provision a tenant, initial company, "
-        "and owner at `/platform-api/v1/tenants`; add companies, publish a plan version, "
+        "and owner at `/platform-api/v1/tenants`; add companies, create and publish a plan version, "
         "issue a license, then explicitly assign it. These private commands require "
         "`Idempotency-Key` and an audit reason. Business owners cannot register tenants "
         "or bind licenses.\n"

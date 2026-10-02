@@ -1,5 +1,8 @@
 from config.settings.base import *  # noqa: F403
 
+# Test migrations and fixtures use one isolated database even if a developer's
+# environment defines a separate platform connection for the running server.
+DATABASES.pop("platform", None)  # noqa: F405
 PLATFORM_ALLOW_DEFAULT_CONNECTION = True
 
 # Existing domain fixtures use Django's test-only force_login helper. Production

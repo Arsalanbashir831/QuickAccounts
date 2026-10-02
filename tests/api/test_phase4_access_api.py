@@ -483,6 +483,74 @@ def test_renewal_order_replays_without_duplicates(accounting_context: dict[str, 
 @pytest.mark.api
 @pytest.mark.p0
 @pytest.mark.django_db(transaction=True)
+def test_platform_creates_draft_plan_version_with_features(
+    accounting_context: dict[str, object],
+) -> None:
+    operator = get_user_model().objects.create_superuser(
+        email=f"plan-author-{uuid.uuid4()}@example.com",
+        password="test-operator-password",
+    )
+    client = APIClient()
+    client.force_login(operator)
+    payload = {
+        "plan_id": str(accounting_context["plan"]),
+        "version_number": 2,
+        "term_unit": "month",
+        "term_count": 1,
+        "max_activations": 3,
+        "permits_offline_use": False,
+        "price_currency": "usd",
+        "price_amount": "49.990000",
+        "features": [
+            {"feature_code": "module.sales", "is_enabled": True},
+            {
+                "feature_code": "module.inventory",
+                "is_enabled": True,
+                "limit_value": "5.000000",
+            },
+        ],
+        "reason": "Add monthly Standard version",
+    }
+    url = "/platform-api/v1/plan-versions"
+    created = client.post(
+        url, payload, format="json", HTTP_IDEMPOTENCY_KEY="create-standard-v2"
+    )
+    replay = client.post(
+        url, payload, format="json", HTTP_IDEMPOTENCY_KEY="create-standard-v2"
+    )
+    assert created.status_code == 201, created.json()
+    assert replay.status_code == 201, replay.json()
+    assert replay.json() == created.json()
+    assert created.json()["status"] == "draft"
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT version_number,term_unit,term_count,max_activations,
+                   permits_offline_use,price_currency,price_amount,published_at
+            FROM licensing.plan_versions WHERE id=%s
+            """,
+            [created.json()["id"]],
+        )
+        version = cursor.fetchone()
+        assert version[:6] == (2, "month", 1, 3, False, "USD")
+        assert str(version[6]) == "49.990000"
+        assert version[7] is None
+        cursor.execute(
+            """
+            SELECT feature_code,is_enabled,limit_value
+            FROM licensing.plan_features WHERE plan_version_id=%s ORDER BY feature_code
+            """,
+            [created.json()["id"]],
+        )
+        assert cursor.fetchall() == [
+            ("module.inventory", True, 5),
+            ("module.sales", True, None),
+        ]
+
+
+@pytest.mark.api
+@pytest.mark.p0
+@pytest.mark.django_db(transaction=True)
 def test_issued_license_requires_operator_assignment(
     accounting_context: dict[str, object],
 ) -> None:
